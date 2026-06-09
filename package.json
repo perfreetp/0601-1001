@@ -1,0 +1,26 @@
+{
+  "name": "writing-ai-sdk",
+  "version": "1.0.0",
+  "description": "AI 写作平台 SDK - 提供文章规划、润色等 7 组核心能力",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "ts-node src/example.ts",
+    "test": "ts-node src/example.ts"
+  },
+  "keywords": [
+    "ai",
+    "writing",
+    "sdk",
+    "writing-assistant",
+    "content-generation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}
