@@ -23,6 +23,12 @@ const TONE_DESCRIPTIONS: Record<Tone, string> = {
 
 const ALL_STYLES: TitleStyle[] = ['catchy', 'formal', 'question', 'howto', 'list', 'story', 'news'];
 
+const EXAGGERATION_WORDS = [
+  '彻底', '完全', '100%', '百分之百', '绝对', '最强', '无敌', '史上最',
+  '爆', '炸', '疯传', '震惊', '颠覆', '革命性', '史无前例', '前无古人',
+  '秒杀', '碾压', '吊打', '宇宙第一', '全球最佳', '完美', '终极',
+];
+
 const SYSTEM_PROMPT = `你是一位资深的内容运营和标题专家，深谙传播心理学。
 请严格按照 JSON 格式返回结果，格式如下：
 {
@@ -37,7 +43,9 @@ const SYSTEM_PROMPT = `你是一位资深的内容运营和标题专家，深谙
 - style 必须使用用户指定的风格之一
 - 每个标题给出 2-3 个设计亮点 highlights
 - explanation 解释为什么这样设计
-- suitabilityScore 为 0-100 的整数`;
+- suitabilityScore 为 0-100 的整数
+- 如果用户要求必须包含关键词，则每个标题都必须包含至少一个指定关键词
+- 如果用户要求避免夸张表达，标题中不要使用"彻底"、"100%"、"绝对"、"最强"、"完美"等夸大词汇`;
 
 export class TitleGenerator {
   constructor(private provider: AIProvider) {}
@@ -58,7 +66,15 @@ export class TitleGenerator {
       `标题数量必须是 1-10 之间的整数，收到: ${rawCount}`
     );
 
-    let styles = req.styles && req.styles.length > 0 ? req.styles : ALL_STYLES;
+    if (req.styles !== undefined) {
+      if (!Array.isArray(req.styles) || req.styles.length === 0) {
+        throw new SDKError(
+          ERROR_CODES.INVALID_STYLES,
+          '标题风格列表不能为空；如果希望使用全部默认风格请不要传入 styles 参数，或传入至少一个有效风格（catchy、formal、question、howto、list、story、news）'
+        );
+      }
+    }
+    let styles = req.styles ?? ALL_STYLES;
     const invalidStyles = styles.filter(s => !(s in STYLE_DESCRIPTIONS));
     if (invalidStyles.length > 0) {
       throw new SDKError(
@@ -71,13 +87,19 @@ export class TitleGenerator {
 
     const count = rawCount;
     const styleDescriptions = styles.map(s => `- ${s}（${STYLE_DESCRIPTIONS[s]}）`).join('\n');
+    const keywordConstraint = req.mustIncludeKeywords && req.keywords?.length
+      ? `\n⚠️ 硬性要求：每个标题都必须包含以下至少一个关键词：${req.keywords.join('、')}`
+      : '';
+    const exaggerationConstraint = req.avoidExaggeration
+      ? '\n⚠️ 硬性要求：标题必须避免夸张表达，严禁使用"彻底"、"100%"、"绝对"、"最强"、"完美"、"颠覆"等夸大词汇'
+      : '';
 
     const userPrompt = `请为以下内容生成 ${count} 个标题（必须严格返回 ${count} 个）：
 
 主题：${req.topic}
 ${req.tone ? `整体语气：${TONE_DESCRIPTIONS[req.tone]}` : ''}
-${req.keywords?.length ? `必须包含的关键词：${req.keywords.join('、')}` : ''}
-${req.context ? `补充背景：${req.context}` : ''}
+${req.keywords?.length ? `参考关键词：${req.keywords.join('、')}` : ''}
+${req.context ? `补充背景：${req.context}` : ''}${keywordConstraint}${exaggerationConstraint}
 
 只能使用以下风格（可重复使用以满足数量要求）：
 ${styleDescriptions}
@@ -89,11 +111,104 @@ ${styleDescriptions}
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user', content: userPrompt },
       ],
-      { temperature: 0.95, responseFormat: 'json' }
+      { temperature: req.avoidExaggeration ? 0.6 : 0.95, responseFormat: 'json' }
     );
 
     const raw = this.parseResponse(response);
-    return this.normalizeTitles(raw, count, styles, req.topic);
+    let result = this.normalizeTitles(raw, count, styles, req.topic);
+
+    if (req.mustIncludeKeywords && req.keywords?.length) {
+      result = this.enforceKeywords(result, req.keywords, req.topic, styles);
+    }
+    if (req.avoidExaggeration) {
+      result = this.enforceNoExaggeration(result, req.topic, styles);
+    }
+
+    return result;
+  }
+
+  private enforceKeywords(
+    result: TitleGenerationResult,
+    keywords: string[],
+    topic: string,
+    allowedStyles: TitleStyle[]
+  ): TitleGenerationResult {
+    const fixedTitles = result.titles.map((t, idx) => {
+      const containsAny = keywords.some(kw => t.title.includes(kw));
+      if (containsAny) return t;
+      const kw = keywords[idx % keywords.length];
+      const style = t.style;
+      let newTitle = t.title;
+      if (style === 'list' || style === 'howto') {
+        newTitle = `${t.title}：${kw}实战指南`;
+      } else if (style === 'question') {
+        newTitle = `为什么${kw}如此重要？${t.title.replace(/^为什么.*？/, '').replace(/^为什么.*\?/, '')}`;
+      } else if (style === 'formal') {
+        newTitle = `${topic}研究：以${kw}为核心的分析框架`;
+      } else {
+        newTitle = `${t.title}（附${kw}实战技巧）`;
+      }
+      return {
+        ...t,
+        title: newTitle,
+        highlights: [...(t.highlights || []).slice(0, 2), `已自动植入关键词「${kw}」`],
+      };
+    });
+
+    const allPass = fixedTitles.every(t => keywords.some(kw => t.title.includes(kw)));
+    if (!allPass) {
+      const failed = fixedTitles.filter(t => !keywords.some(kw => t.title.includes(kw)));
+      throw new SDKError(
+        ERROR_CODES.KEYWORD_MISSING,
+        `有 ${failed.length} 个标题无法自动植入指定关键词，请调整关键词或降低 mustIncludeKeywords 要求`,
+        { failedCount: failed.length, keywords }
+      );
+    }
+    return { ...result, titles: fixedTitles };
+  }
+
+  private enforceNoExaggeration(
+    result: TitleGenerationResult,
+    topic: string,
+    allowedStyles: TitleStyle[]
+  ): TitleGenerationResult {
+    const fixedTitles = result.titles.map(t => {
+      let title = t.title;
+      const foundWords: string[] = [];
+      EXAGGERATION_WORDS.forEach(word => {
+        if (title.includes(word)) {
+          foundWords.push(word);
+          title = title
+            .replace(new RegExp(word, 'g'), '')
+            .replace(/\s+/g, ' ')
+            .replace(/（\s*）/g, '')
+            .replace(/\(\s*\)/g, '')
+            .trim();
+        }
+      });
+      if (foundWords.length === 0) return t;
+      if (title.length < 4) {
+        title = `${topic}的理性分析与实用建议`;
+      }
+      return {
+        ...t,
+        title,
+        highlights: [...(t.highlights || []).slice(0, 2), `已自动移除夸张词汇：${foundWords.join('、')}`],
+        suitabilityScore: Math.max(50, t.suitabilityScore - 10),
+      };
+    });
+
+    const exaggerationRemaining = fixedTitles.filter(t =>
+      EXAGGERATION_WORDS.some(w => t.title.includes(w))
+    );
+    if (exaggerationRemaining.length > 0) {
+      throw new SDKError(
+        ERROR_CODES.EXAGGERATION_DETECTED,
+        `有 ${exaggerationRemaining.length} 个标题仍存在夸张表达，无法自动修复`,
+        { failedCount: exaggerationRemaining.length }
+      );
+    }
+    return { ...result, titles: fixedTitles };
   }
 
   private normalizeTitles(
@@ -157,17 +272,17 @@ ${styleDescriptions}
   private generateFallbackTitle(topic: string, style: TitleStyle, idx: number): string {
     switch (style) {
       case 'catchy':
-        return `别再错过了：关于${topic}的${idx}个关键真相`;
+        return `关于${topic}的${idx}个关键要点`;
       case 'formal':
         return `${topic}：基于实践的系统性分析`;
       case 'question':
-        return `为什么${topic}如此重要？答案可能出乎你意料`;
+        return `为什么${topic}如此重要？一份客观分析`;
       case 'howto':
         return `如何掌握${topic}：一份实用的进阶指南`;
       case 'list':
         return `${topic}的${idx}个核心要点，你知道几个？`;
       case 'story':
-        return `我是如何通过${topic}改变现状的`;
+        return `我是如何通过${topic}取得实际进展的`;
       case 'news':
         return `关于${topic}的最新观察与思考`;
       default:

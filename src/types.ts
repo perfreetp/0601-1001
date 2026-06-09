@@ -75,6 +75,9 @@ export interface ParagraphExpansionRequest {
   versions?: number;
   context?: string;
   focusPoint?: string;
+  minWords?: number;
+  maxWords?: number;
+  forbiddenTones?: Tone[];
 }
 
 export interface ExpandedVersion {
@@ -133,6 +136,8 @@ export interface TitleGenerationRequest {
   keywords?: string[];
   context?: string;
   tone?: Tone;
+  mustIncludeKeywords?: boolean;
+  avoidExaggeration?: boolean;
 }
 
 export interface TitleOption {
@@ -183,20 +188,6 @@ export interface ConversationMessage {
   metadata?: Record<string, unknown>;
 }
 
-export interface ArticleVersion {
-  version: number;
-  content: string;
-  timestamp: number;
-  description: string;
-  changes: string[];
-}
-
-export interface ConversationContinueRequest {
-  conversationId: string;
-  instruction: string;
-  currentContent?: string;
-}
-
 export interface VersionComparison {
   fromVersion: number;
   toVersion: number;
@@ -225,4 +216,78 @@ export interface AIChatMessage {
 
 export interface AIProvider {
   chat(messages: AIChatMessage[], options?: { temperature?: number; responseFormat?: 'json' | 'text' }): Promise<string>;
+}
+
+export type BatchTaskType = 'topic' | 'outline' | 'title';
+
+export type BatchTaskStatus = 'success' | 'failed' | 'skipped';
+
+export interface BatchTopicTask {
+  id?: string;
+  type: 'topic';
+  request: TopicAnalysisRequest;
+}
+
+export interface BatchOutlineTask {
+  id?: string;
+  type: 'outline';
+  request: OutlineGenerationRequest;
+}
+
+export interface BatchTitleTask {
+  id?: string;
+  type: 'title';
+  request: TitleGenerationRequest;
+}
+
+export type BatchTask = BatchTopicTask | BatchOutlineTask | BatchTitleTask;
+
+export interface BatchTaskResult<T = unknown> {
+  id: string;
+  type: BatchTaskType;
+  status: BatchTaskStatus;
+  result?: T;
+  errorCode?: string;
+  errorMessage?: string;
+  userFriendlyError?: string;
+}
+
+export interface BatchRunResult {
+  total: number;
+  successCount: number;
+  failedCount: number;
+  results: BatchTaskResult[];
+  summary: string;
+}
+
+export interface ArticleVersion {
+  version: number;
+  content: string;
+  timestamp: number;
+  description: string;
+  changes: string[];
+  branchId: string;
+  parentVersion?: number;
+}
+
+export interface ConversationContinueRequest {
+  conversationId: string;
+  instruction: string;
+  currentContent?: string;
+  baseVersion?: number;
+  branchId?: string;
+}
+
+export interface BranchComparison {
+  conversationId: string;
+  branches: {
+    branchId: string;
+    latestVersion: number;
+    baseVersion: number;
+    changes: string[];
+    description: string;
+  }[];
+  commonBase: number;
+  differences: string[];
+  userFriendlySummary: string;
 }

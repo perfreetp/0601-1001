@@ -7,6 +7,7 @@ import { Polisher } from './capabilities/polisher';
 import { TitleGenerator } from './capabilities/titleGenerator';
 import { CitationChecker } from './capabilities/citationChecker';
 import { ConversationManager } from './capabilities/conversationManager';
+import { BatchProcessor } from './capabilities/batchProcessor';
 
 export class WritingAISDK {
   public topic: TopicAnalyzer;
@@ -16,6 +17,7 @@ export class WritingAISDK {
   public title: TitleGenerator;
   public citation: CitationChecker;
   public conversation: ConversationManager;
+  public batch: BatchProcessor;
 
   private provider: AIProvider;
   private config: SDKConfig;
@@ -34,6 +36,7 @@ export class WritingAISDK {
     this.title = new TitleGenerator(this.provider);
     this.citation = new CitationChecker(this.provider);
     this.conversation = new ConversationManager(this.provider);
+    this.batch = new BatchProcessor(this.provider);
   }
 }
 
@@ -47,3 +50,4 @@ export { Polisher } from './capabilities/polisher';
 export { TitleGenerator } from './capabilities/titleGenerator';
 export { CitationChecker } from './capabilities/citationChecker';
 export { ConversationManager } from './capabilities/conversationManager';
+export { BatchProcessor } from './capabilities/batchProcessor';

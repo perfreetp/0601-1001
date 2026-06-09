@@ -5,14 +5,18 @@ import {
   ConversationContinueRequest,
   ConversationResult,
   VersionComparison,
+  BranchComparison,
 } from '../types';
 import { assertNonEmptyString, SDKError, ERROR_CODES } from '../errors';
+
+const MAIN_BRANCH = 'main';
 
 interface SessionState {
   conversationId: string;
   messages: ConversationMessage[];
   versions: ArticleVersion[];
   currentContent: string;
+  branchVersionCounters: Record<string, number>;
   createdAt: number;
   updatedAt: number;
 }
@@ -44,6 +48,8 @@ export class ConversationManager {
       timestamp: now,
       description: content ? '初始版本' : '新建会话',
       changes: content ? ['✅ 导入初始稿件'] : ['✅ 创建新会话'],
+      branchId: MAIN_BRANCH,
+      parentVersion: undefined,
     };
 
     const state: SessionState = {
@@ -53,6 +59,7 @@ export class ConversationManager {
       ],
       versions: [version],
       currentContent: content,
+      branchVersionCounters: { [MAIN_BRANCH]: 1 },
       createdAt: now,
       updatedAt: now,
     };
@@ -63,7 +70,7 @@ export class ConversationManager {
       conversationId,
       response: '会话已创建，我来帮你一起打磨这篇文章吧！',
       revisedContent: content,
-      userFriendlyChanges: ['✅ 会话已创建', '📄 初始版本已保存（v1）'],
+      userFriendlyChanges: ['✅ 会话已创建', `📄 初始版本已保存（${MAIN_BRANCH} 分支 / v1）`],
       currentVersion: 1,
       versions: [version],
     };
@@ -90,13 +97,46 @@ export class ConversationManager {
     }
 
     const now = Date.now();
+    const branchId = req.branchId?.trim() || MAIN_BRANCH;
+    if (branchId.trim().length === 0) {
+      throw new SDKError(
+        ERROR_CODES.INVALID_BRANCH_ID,
+        '分支 ID 不能为空字符串，请传入有效的 branchId 或留空使用 main 分支'
+      );
+    }
+
+    let baseVersionNum = req.baseVersion;
+    if (baseVersionNum === undefined) {
+      const branchVersions = state.versions.filter(v => v.branchId === branchId);
+      baseVersionNum = branchVersions.length > 0
+        ? Math.max(...branchVersions.map(v => v.version))
+        : 1;
+    }
+    const baseVersion = state.versions.find(v => v.version === baseVersionNum);
+    if (!baseVersion) {
+      throw new SDKError(
+        ERROR_CODES.VERSION_NOT_FOUND,
+        `基准版本 v${baseVersionNum} 不存在，当前会话共有 ${state.versions.length} 个版本`
+      );
+    }
+
+    if (!state.branchVersionCounters[branchId]) {
+      state.branchVersionCounters[branchId] = 0;
+    }
+    const newVersionNum = state.versions.length + 1;
+    state.branchVersionCounters[branchId] = Math.max(state.branchVersionCounters[branchId] + 1, 1);
+
     const baseContent = req.currentContent && req.currentContent.trim().length > 0
       ? req.currentContent
-      : state.currentContent;
+      : baseVersion.content;
+
+    const branchInfo = branchId === MAIN_BRANCH
+      ? '在主线继续改稿'
+      : `从 v${baseVersionNum} 创建/继续分支「${branchId}」`;
 
     const userMessage: ConversationMessage = {
       role: 'user',
-      content: `${req.instruction}\n\n当前文章内容：\n"""\n${baseContent}\n"""`,
+      content: `【${branchInfo}】\n改稿指令：${req.instruction}\n\n当前文章内容（基准版本 v${baseVersionNum}）：\n"""\n${baseContent}\n"""`,
       timestamp: now,
     };
     state.messages.push(userMessage);
@@ -113,7 +153,7 @@ export class ConversationManager {
       role: 'assistant',
       content: parsed.response,
       timestamp: now,
-      metadata: { changes: parsed.userFriendlyChanges },
+      metadata: { changes: parsed.userFriendlyChanges, branchId, baseVersion: baseVersionNum },
     };
     state.messages.push(assistantMessage);
 
@@ -122,11 +162,13 @@ export class ConversationManager {
       : baseContent;
 
     const newVersion: ArticleVersion = {
-      version: state.versions.length + 1,
+      version: newVersionNum,
       content: revisedContent,
       timestamp: now,
-      description: req.instruction.substring(0, 50),
+      description: `[${branchId}] ${req.instruction.substring(0, 40)}`,
       changes: parsed.userFriendlyChanges,
+      branchId,
+      parentVersion: baseVersionNum,
     };
     state.versions.push(newVersion);
     state.currentContent = revisedContent;
@@ -137,12 +179,12 @@ export class ConversationManager {
       response: parsed.response,
       revisedContent,
       userFriendlyChanges: parsed.userFriendlyChanges,
-      currentVersion: newVersion.version,
+      currentVersion: newVersionNum,
       versions: state.versions,
     };
   }
 
-  getVersions(conversationId: string): ArticleVersion[] {
+  getVersions(conversationId: string, branchId?: string): ArticleVersion[] {
     assertNonEmptyString(
       conversationId,
       ERROR_CODES.EMPTY_CONVERSATION_ID,
@@ -155,7 +197,34 @@ export class ConversationManager {
         `会话 ${conversationId} 不存在`
       );
     }
+    if (branchId) {
+      return state.versions.filter(v => v.branchId === branchId);
+    }
     return state.versions;
+  }
+
+  listBranches(conversationId: string): { branchId: string; versionCount: number; latestVersion: number; baseVersion?: number }[] {
+    assertNonEmptyString(conversationId, ERROR_CODES.EMPTY_CONVERSATION_ID, '会话 ID 不能为空');
+    const state = this.sessions.get(conversationId);
+    if (!state) {
+      throw new SDKError(ERROR_CODES.CONVERSATION_NOT_FOUND, `会话 ${conversationId} 不存在`);
+    }
+    const branchMap = new Map<string, ArticleVersion[]>();
+    state.versions.forEach(v => {
+      if (!branchMap.has(v.branchId)) branchMap.set(v.branchId, []);
+      branchMap.get(v.branchId)!.push(v);
+    });
+    const result: { branchId: string; versionCount: number; latestVersion: number; baseVersion?: number }[] = [];
+    branchMap.forEach((versions, bid) => {
+      const sorted = [...versions].sort((a, b) => a.version - b.version);
+      result.push({
+        branchId: bid,
+        versionCount: versions.length,
+        latestVersion: Math.max(...versions.map(v => v.version)),
+        baseVersion: sorted[0]?.parentVersion,
+      });
+    });
+    return result.sort((a, b) => a.branchId.localeCompare(b.branchId));
   }
 
   compareVersions(conversationId: string, fromVersion: number, toVersion: number): VersionComparison {
@@ -199,9 +268,71 @@ export class ConversationManager {
       }
     }
 
-    const summary = `从 v${fromVersion} 到 v${toVersion}：共 ${changes.length} 处变更（新增 ${changes.filter(c => c.type === 'added').length}，删除 ${changes.filter(c => c.type === 'removed').length}，修改 ${changes.filter(c => c.type === 'modified').length}）`;
+    const summary = `从 v${fromVersion}（${from.branchId}）到 v${toVersion}（${to.branchId}）：共 ${changes.length} 处变更（新增 ${changes.filter(c => c.type === 'added').length}，删除 ${changes.filter(c => c.type === 'removed').length}，修改 ${changes.filter(c => c.type === 'modified').length}）`;
 
     return { fromVersion, toVersion, changes, summary };
+  }
+
+  compareBranches(conversationId: string, branchIds?: string[]): BranchComparison {
+    assertNonEmptyString(conversationId, ERROR_CODES.EMPTY_CONVERSATION_ID, '会话 ID 不能为空');
+    const state = this.sessions.get(conversationId);
+    if (!state) {
+      throw new SDKError(ERROR_CODES.CONVERSATION_NOT_FOUND, `会话 ${conversationId} 不存在`);
+    }
+
+    const branches = this.listBranches(conversationId).filter(
+      b => !branchIds || branchIds.includes(b.branchId)
+    );
+    if (branches.length < 2) {
+      throw new SDKError(
+        ERROR_CODES.BRANCH_NOT_FOUND,
+        `需要至少 2 个分支才能对比，当前找到 ${branches.length} 个分支`
+      );
+    }
+
+    const baseVersionNums = branches.map(b => b.baseVersion).filter((n): n is number => n !== undefined);
+    const commonBase = baseVersionNums.length > 0 ? Math.min(...baseVersionNums) : 1;
+
+    const branchInfos = branches.map(b => {
+      const versions = state.versions.filter(v => v.branchId === b.branchId);
+      const last = versions[versions.length - 1];
+      const first = versions[0];
+      return {
+        branchId: b.branchId,
+        versionCount: b.versionCount,
+        latestVersion: b.latestVersion,
+        baseVersion: first.parentVersion || commonBase,
+        changes: last.changes,
+        description: `分支 ${b.branchId} 共 ${b.versionCount} 个版本，基于 v${first.parentVersion || commonBase} 创建，最新改动：${last.changes[0] || '未记录'}`,
+      };
+    });
+
+    const differences: string[] = [];
+    const contents = new Map(branchInfos.map(b => [b.branchId, state.versions.find(v => v.version === b.latestVersion)?.content || '']));
+    const firstContent = contents.get(branchInfos[0].branchId) || '';
+    branchInfos.slice(1).forEach(b => {
+      const c = contents.get(b.branchId) || '';
+      if (c === firstContent) {
+        differences.push(`${branchInfos[0].branchId} 与 ${b.branchId} 内容一致`);
+      } else {
+        const diff = Math.abs(c.length - firstContent.length);
+        differences.push(`${branchInfos[0].branchId} 与 ${b.branchId} 内容存在差异（字数差约 ${diff} 字），建议使用 compareVersions 逐行对比`);
+      }
+    });
+
+    const userFriendlySummary = [
+      `🌿 分支对比：共 ${branches.length} 个分支，共同基准版本 v${commonBase}`,
+      ...branchInfos.map(b => `   · ${b.branchId}：${b.versionCount} 个版本，最新 v${b.latestVersion}，基于 v${b.baseVersion} 创建`),
+      ...differences.map(d => `   ${d}`),
+    ].join('\n');
+
+    return {
+      conversationId,
+      branches: branchInfos,
+      commonBase,
+      differences,
+      userFriendlySummary,
+    };
   }
 
   getHistory(conversationId: string): ConversationMessage[] {

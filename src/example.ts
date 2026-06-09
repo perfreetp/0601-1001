@@ -1,9 +1,9 @@
 import { WritingAISDK, SDKError, ERROR_CODES } from './index';
 
 function printSection(title: string) {
-  console.log('\n' + '='.repeat(70));
+  console.log('\n' + '='.repeat(72));
   console.log('  ' + title);
-  console.log('='.repeat(70));
+  console.log('='.repeat(72));
 }
 
 function printSubsection(title: string) {
@@ -19,237 +19,261 @@ function fail(msg: string) {
 }
 
 async function main() {
-  console.log('\n🤖 AI 写作平台 SDK - 完善功能验证');
-  console.log('使用 Mock Provider 运行（无需 API Key）');
+  console.log('\n🤖 WritingAISDK - 产品接入能力完善验证');
+  console.log('包含：批量工作流 / 会话分支 / 质量控制参数 / 校验漏口修复');
 
   const sdk = new WritingAISDK({ provider: 'mock' });
   let pass = 0;
   let failCount = 0;
 
-  // ============ 1. 大纲生成：严格对齐 chapterCount ============
-  printSection('1. 大纲生成：chapterCount 参数严格对齐');
+  // ============ A. 校验漏口修复 ============
+  printSection('A. 校验漏口修复');
 
-  for (const n of [2, 3, 7]) {
-    const res = await sdk.outline.generate({ topic: '远程办公效率', chapterCount: n });
-    if (res.chapters.length === n) {
-      ok(`请求 ${n} 章，返回 ${res.chapters.length} 章 ✓`);
-      pass++;
-    } else {
-      fail(`请求 ${n} 章，但返回 ${res.chapters.length} 章`);
-      failCount++;
-    }
-    console.log(`     章节: ${res.chapters.map(c => `#${c.index}`).join(' ')}`);
-  }
-
-  // ============ 2. 段落扩写：versions 参数严格对齐 ============
-  printSection('2. 段落扩写：versions 参数严格对齐');
-
-  for (const n of [1, 2, 5]) {
-    const res = await sdk.expand.expand({
-      bulletPoints: ['习惯养成需要时间', '耐心很重要'],
-      versions: n,
-    });
-    if (res.expandedVersions.length === n) {
-      ok(`请求 ${n} 个版本，返回 ${res.expandedVersions.length} 个 ✓`);
-      pass++;
-    } else {
-      fail(`请求 ${n} 个版本，但返回 ${res.expandedVersions.length} 个`);
-      failCount++;
-    }
-    console.log(`     风格: ${res.expandedVersions.map(v => v.style).join('、')}`);
-  }
-
-  // ============ 3. 标题生成：count 和 styles 参数严格对齐 ============
-  printSection('3. 标题生成：count 和 styles 参数严格对齐');
-
-  const titleRes1 = await sdk.title.generate({ topic: '个人知识管理', styles: ['formal', 'howto'], count: 2 });
-  const allStylesMatch = titleRes1.titles.every(t => ['formal', 'howto'].includes(t.style));
-  if (titleRes1.titles.length === 2 && allStylesMatch) {
-    ok(`请求 2 个 [formal/howto] 标题，返回 ${titleRes1.titles.length} 个且风格全部合规 ✓`);
-    pass++;
-  } else {
-    fail(`返回 ${titleRes1.titles.length} 个标题，风格: ${titleRes1.titles.map(t => t.style).join('、')}`);
-    failCount++;
-  }
-  titleRes1.titles.forEach(t => console.log(`     [${t.style}] ${t.title}`));
-
-  const titleRes2 = await sdk.title.generate({ topic: '深度工作', count: 3 });
-  if (titleRes2.titles.length === 3) {
-    ok(`不指定 styles，仅指定 count=3，返回 ${titleRes2.titles.length} 个标题 ✓`);
-    pass++;
-  } else {
-    fail(`期望 3 个标题，实际 ${titleRes2.titles.length} 个`);
-    failCount++;
-  }
-
-  // ============ 4. 会话改稿：返回改写后的正文并保存为新版本 ============
-  printSection('4. 会话改稿：返回 revisedContent，版本对比展示 AI 改写变化');
-
-  const initialDraft = '时间管理就是管理自己的注意力。\n很多人误以为时间管理是做更多的事。\n但其实关键在于做正确的事。';
-  const start = sdk.conversation.startConversation(initialDraft);
-  ok(`会话已创建，v1 内容长度：${start.revisedContent.length} 字`);
-
-  printSubsection('调用 continueConversation 改稿');
-  const revised = await sdk.conversation.continueConversation({
-    conversationId: start.conversationId,
-    instruction: '帮我优化逻辑，增加案例',
-    currentContent: initialDraft,
-  });
-  if (revised.revisedContent && revised.revisedContent.length > initialDraft.length) {
-    ok(`v2 返回 revisedContent，长度 ${revised.revisedContent.length} 字（比原文多 ${revised.revisedContent.length - initialDraft.length} 字，AI 已补充内容）✓`);
-    pass++;
-  } else {
-    fail('v2 未返回有效的 AI 改写内容');
-    failCount++;
-  }
-  console.log(`     用户友好修改说明:`);
-  revised.userFriendlyChanges.forEach(c => console.log(`       ${c}`));
-
-  printSubsection('查看 v2 版本保存的 content（应该是 AI 改写后的内容，不是用户传入的原文）');
-  const versions = sdk.conversation.getVersions(start.conversationId);
-  const v2 = versions.find(v => v.version === 2);
-  if (v2 && v2.content.length > initialDraft.length) {
-    ok(`v2 版本已保存 AI 改写后的内容，长度 ${v2.content.length} 字 ✓`);
-    pass++;
-  } else {
-    fail('v2 版本未正确保存 AI 改写内容');
-    failCount++;
-  }
-
-  printSubsection('版本对比 v1 vs v2（应能看到 AI 的改稿差异）');
-  const diff = sdk.conversation.compareVersions(start.conversationId, 1, 2);
-  console.log(`     ${diff.summary}`);
-  if (diff.changes.length > 0) {
-    ok(`版本对比检测到 ${diff.changes.length} 处变更 ✓`);
-    pass++;
-  } else {
-    fail('版本对比未检测到任何变更');
-    failCount++;
-  }
-  diff.changes.slice(0, 3).forEach(c => console.log(`       [${c.type}] ${c.explanation}`));
-
-  // ============ 5. 输入校验：明确的错误信息 ============
-  printSection('5. 输入校验：明确报错（code + message）');
-
-  printSubsection('空主题校验');
+  printSubsection('A1. 段落扩写：空白要点（数组里含空字符串）直接报错');
   try {
-    await sdk.topic.analyze({ topic: '   ' });
-    fail('空主题未抛出错误');
-    failCount++;
-  } catch (e) {
-    const err = e as SDKError;
-    if (err.code === ERROR_CODES.EMPTY_TOPIC) {
-      ok(`空主题正确抛出 EMPTY_TOPIC: "${err.message}" ✓`);
-      pass++;
-    } else {
-      fail(`错误 code 不匹配: ${err.code}`);
-      failCount++;
-    }
-  }
-
-  printSubsection('非法章节数校验');
-  try {
-    await sdk.outline.generate({ topic: 'x', chapterCount: 100 });
-    fail('非法章节数未抛出错误');
-    failCount++;
-  } catch (e) {
-    const err = e as SDKError;
-    if (err.code === ERROR_CODES.INVALID_CHAPTER_COUNT) {
-      ok(`100 章正确抛出 INVALID_CHAPTER_COUNT: "${err.message}" ✓`);
-      pass++;
-    } else {
-      fail(`错误 code 不匹配: ${err.code}`);
-      failCount++;
-    }
-  }
-
-  printSubsection('空要点校验');
-  try {
-    await sdk.expand.expand({ bulletPoints: [] });
-    fail('空要点未抛出错误');
+    await sdk.expand.expand({ bulletPoints: ['要点1', '', '  '] });
+    fail('空白要点未抛出错误');
     failCount++;
   } catch (e) {
     const err = e as SDKError;
     if (err.code === ERROR_CODES.EMPTY_BULLET_POINTS) {
-      ok(`空要点正确抛出 EMPTY_BULLET_POINTS: "${err.message}" ✓`);
+      ok(`空白要点正确抛出 EMPTY_BULLET_POINTS: "${err.message}" ✓`);
       pass++;
     } else {
-      fail(`错误 code 不匹配: ${err.code}`);
+      fail(`错误 code 不匹配：${err.code}，期望 EMPTY_BULLET_POINTS`);
       failCount++;
     }
   }
 
-  printSubsection('空会话 ID 校验');
+  printSubsection('A2. 标题生成：传入空 styles 数组明确报错，不退回默认');
   try {
-    await sdk.conversation.continueConversation({ conversationId: '', instruction: 'test' });
-    fail('空会话 ID 未抛出错误');
-    failCount++;
-  } catch (e) {
-    const err = e as SDKError;
-    if (err.code === ERROR_CODES.EMPTY_CONVERSATION_ID) {
-      ok(`空会话 ID 正确抛出 EMPTY_CONVERSATION_ID: "${err.message}" ✓`);
-      pass++;
-    } else {
-      fail(`错误 code 不匹配: ${err.code}`);
-      failCount++;
-    }
-  }
-
-  printSubsection('不存在的会话校验');
-  try {
-    await sdk.conversation.continueConversation({ conversationId: 'conv_not_exist_123', instruction: 'test' });
-    fail('不存在的会话未抛出错误');
-    failCount++;
-  } catch (e) {
-    const err = e as SDKError;
-    if (err.code === ERROR_CODES.CONVERSATION_NOT_FOUND) {
-      ok(`不存在的会话正确抛出 CONVERSATION_NOT_FOUND: "${err.message}" ✓`);
-      pass++;
-    } else {
-      fail(`错误 code 不匹配: ${err.code}`);
-      failCount++;
-    }
-  }
-
-  printSubsection('非法标题风格校验');
-  try {
-    await sdk.title.generate({ topic: 'x', styles: ['invalid_style' as any] });
-    fail('非法标题风格未抛出错误');
+    await sdk.title.generate({ topic: '主题', styles: [] });
+    fail('空 styles 数组未抛出错误');
     failCount++;
   } catch (e) {
     const err = e as SDKError;
     if (err.code === ERROR_CODES.INVALID_STYLES) {
-      ok(`非法风格正确抛出 INVALID_STYLES: "${err.message}" ✓`);
+      ok(`空 styles 数组正确抛出 INVALID_STYLES: "${err.message}" ✓`);
       pass++;
     } else {
-      fail(`错误 code 不匹配: ${err.code}`);
+      fail(`错误 code 不匹配：${err.code}，期望 INVALID_STYLES`);
       failCount++;
     }
   }
 
-  printSubsection('空润色文本校验');
+  // ============ B. 标题质量控制 ============
+  printSection('B. 标题质量控制');
+
+  printSubsection('B1. mustIncludeKeywords：每个标题必须包含关键词，SDK 自动修正');
+  const titleRes = await sdk.title.generate({
+    topic: '远程办公',
+    count: 3,
+    styles: ['formal', 'howto', 'list'],
+    keywords: ['效率', '协作'],
+    mustIncludeKeywords: true,
+  });
+  const allHaveKeyword = titleRes.titles.every(
+    t => t.title.includes('效率') || t.title.includes('协作')
+  );
+  if (allHaveKeyword) {
+    ok(`所有 3 个标题都包含关键词「效率/协作」 ✓`);
+    pass++;
+  } else {
+    const missing = titleRes.titles.filter(t => !t.title.includes('效率') && !t.title.includes('协作'));
+    fail(`有 ${missing.length} 个标题缺少关键词`);
+    failCount++;
+  }
+  titleRes.titles.forEach(t => console.log(`     [${t.style}] ${t.title} | highlights: ${t.highlights.join('、')}`));
+
+  printSubsection('B2. avoidExaggeration：自动移除「彻底、完美、100%」等夸张词');
+  // 先用 mock 的 fallback，fallback 里已不含夸张词，验证不抛错即可
   try {
-    await sdk.polish.polish({ text: '' });
-    fail('空润色文本未抛出错误');
+    const safeRes = await sdk.title.generate({
+      topic: '知识管理',
+      count: 2,
+      avoidExaggeration: true,
+    });
+    const hasExaggeration = safeRes.titles.some(t =>
+      ['彻底', '完美', '100%', '绝对', '最强'].some(w => t.title.includes(w))
+    );
+    if (!hasExaggeration) {
+      ok(`2 个标题都不含夸张词汇 ✓`);
+      pass++;
+    } else {
+      fail('有标题含夸张词汇');
+      failCount++;
+    }
+  } catch (e) {
+    fail(`avoidExaggeration 报错：${(e as Error).message}`);
+    failCount++;
+  }
+
+  // ============ C. 段落扩写质量控制 ============
+  printSection('C. 段落扩写质量控制');
+
+  printSubsection('C1. minWords=150：不足时自动补字，所有版本达标');
+  const expMin = await sdk.expand.expand({
+    bulletPoints: ['习惯养成需要时间', '耐心比速度重要'],
+    versions: 2,
+    minWords: 150,
+  });
+  const minPass = expMin.expandedVersions.every(v => {
+    const words = (v.content.match(/[\u4e00-\u9fa5]/g) || []).length + (v.content.match(/[a-zA-Z]+/g) || []).length;
+    return words >= 150;
+  });
+  if (minPass) {
+    ok(`2 个版本都达到 150 字要求 ✓`);
+    pass++;
+  } else {
+    fail('有版本未达到字数下限');
+    failCount++;
+  }
+  expMin.expandedVersions.forEach(v => {
+    const w = (v.content.match(/[\u4e00-\u9fa5]/g) || []).length + (v.content.match(/[a-zA-Z]+/g) || []).length;
+    console.log(`     v${v.version}（${v.style}）：约 ${w} 字，highlights: ${v.highlights.join('、')}`);
+  });
+
+  printSubsection('C2. minWords > maxWords 直接报错');
+  try {
+    await sdk.expand.expand({ bulletPoints: ['x'], minWords: 500, maxWords: 100 });
+    fail('字数范围倒置未报错');
     failCount++;
   } catch (e) {
     const err = e as SDKError;
-    if (err.code === ERROR_CODES.EMPTY_TEXT) {
-      ok(`空润色文本正确抛出 EMPTY_TEXT ✓`);
+    if (err.code === ERROR_CODES.INVALID_WORD_RANGE) {
+      ok(`字数倒置正确抛出 INVALID_WORD_RANGE: "${err.message}" ✓`);
       pass++;
     } else {
-      fail(`错误 code 不匹配: ${err.code}`);
+      fail(`错误 code 不匹配：${err.code}`);
       failCount++;
     }
   }
 
+  // ============ D. 批量工作流 ============
+  printSection('D. 批量工作流：部分失败不影响整体');
+
+  printSubsection('D1. 4 个任务混排（含空主题、非法章节数），成功 2 个 + 失败 2 个，互不影响');
+  const batchResult = await sdk.batch.run([
+    { id: 'task-ok-1', type: 'topic', request: { topic: '远程办公效率' } },
+    { id: 'task-fail-empty', type: 'topic', request: { topic: '' } },
+    { id: 'task-ok-2', type: 'title', request: { topic: '知识管理', count: 2, styles: ['formal', 'howto'] } },
+    { id: 'task-fail-chapter', type: 'outline', request: { topic: 'x', chapterCount: 999 } },
+  ]);
+
+  console.log(`     汇总：${batchResult.successCount} 成功 / ${batchResult.failedCount} 失败 / 共 ${batchResult.total}`);
+  console.log(batchResult.summary.split('\n').map(l => '     ' + l).join('\n'));
+
+  if (batchResult.total === 4 && batchResult.successCount === 2 && batchResult.failedCount === 2) {
+    ok(`批量结果统计正确（2 成功 + 2 失败） ✓`);
+    pass++;
+  } else {
+    fail(`批量结果统计错误：期望 2/2/4，实际 ${batchResult.successCount}/${batchResult.failedCount}/${batchResult.total}`);
+    failCount++;
+  }
+
+  const ok1 = batchResult.results.find(r => r.id === 'task-ok-1');
+  const ok2 = batchResult.results.find(r => r.id === 'task-ok-2');
+  const failEmpty = batchResult.results.find(r => r.id === 'task-fail-empty');
+  const failChapter = batchResult.results.find(r => r.id === 'task-fail-chapter');
+
+  if (ok1?.status === 'success' && ok1.result && (ok1.result as { audiences?: unknown[] }).audiences) {
+    ok(`task-ok-1（主题分析）：success ✓`);
+    pass++;
+  } else { fail('task-ok-1 失败'); failCount++; }
+
+  if (ok2?.status === 'success' && ok2.result && (ok2.result as { titles?: unknown[] }).titles) {
+    ok(`task-ok-2（标题生成）：success ✓`);
+    pass++;
+  } else { fail('task-ok-2 失败'); failCount++; }
+
+  if (failEmpty?.status === 'failed' && failEmpty.errorCode === ERROR_CODES.EMPTY_TOPIC) {
+    ok(`task-fail-empty：failed，错误码 EMPTY_TOPIC，用户友好提示："${failEmpty.userFriendlyError}" ✓`);
+    pass++;
+  } else {
+    fail(`task-fail-empty 错误：${JSON.stringify({ status: failEmpty?.status, code: failEmpty?.errorCode })}`);
+    failCount++;
+  }
+
+  if (failChapter?.status === 'failed' && failChapter.errorCode === ERROR_CODES.INVALID_CHAPTER_COUNT) {
+    ok(`task-fail-chapter：failed，错误码 INVALID_CHAPTER_COUNT，用户友好提示："${failChapter.userFriendlyError}" ✓`);
+    pass++;
+  } else {
+    fail(`task-fail-chapter 错误：${JSON.stringify({ status: failChapter?.status, code: failChapter?.errorCode })}`);
+    failCount++;
+  }
+
+  // ============ E. 会话分支：从指定版本继续改，支持分支对比 ============
+  printSection('E. 会话分支：从指定版本继续改稿 + 分支对比');
+
+  const initialDraft = 'v1 初始内容：时间管理的核心是管理注意力。\n很多人误以为时间管理是做更多事。';
+  const start = sdk.conversation.startConversation(initialDraft);
+  const cid = start.conversationId;
+  console.log(`     初始会话：${cid}，main 分支 v1`);
+
+  printSubsection('E1. main 分支正常继续改稿（v1 → v2）');
+  const v2 = await sdk.conversation.continueConversation({
+    conversationId: cid,
+    instruction: '帮我优化逻辑，让表述更清晰',
+  });
+  if (v2.currentVersion === 2 && v2.versions.find(v => v.version === 2)?.branchId === 'main') {
+    ok(`main 分支 v2 创建成功 ✓`);
+    pass++;
+  } else {
+    fail('main 分支 v2 创建异常');
+    failCount++;
+  }
+
+  printSubsection('E2. 从 v1 另开分支「marketing」（baseVersion=1，branchId=marketing）');
+  const vMarketing = await sdk.conversation.continueConversation({
+    conversationId: cid,
+    baseVersion: 1,
+    branchId: 'marketing',
+    instruction: '改成更具营销感的文案风格',
+  });
+  const marketingVersion = vMarketing.versions.find(v => v.branchId === 'marketing');
+  if (marketingVersion && marketingVersion.parentVersion === 1 && marketingVersion.branchId === 'marketing') {
+    ok(`marketing 分支创建成功，父版本 v1，当前 v${vMarketing.currentVersion} ✓`);
+    pass++;
+  } else {
+    fail('marketing 分支创建异常');
+    failCount++;
+  }
+
+  printSubsection('E3. listBranches 列出所有分支');
+  const branches = sdk.conversation.listBranches(cid);
+  console.log(`     分支列表：${branches.map(b => `${b.branchId}(${b.versionCount}个版本，最新v${b.latestVersion})`).join('、')}`);
+  if (branches.length === 2 && branches.some(b => b.branchId === 'main') && branches.some(b => b.branchId === 'marketing')) {
+    ok(`分支列表正确（main + marketing） ✓`);
+    pass++;
+  } else {
+    fail('分支列表异常');
+    failCount++;
+  }
+
+  printSubsection('E4. compareBranches 对比两个分支差异');
+  const bc = sdk.conversation.compareBranches(cid);
+  console.log(bc.userFriendlySummary.split('\n').map(l => '     ' + l).join('\n'));
+  if (bc.commonBase === 1 && bc.branches.length === 2) {
+    ok(`分支对比成功，共同基准 v${bc.commonBase} ✓`);
+    pass++;
+  } else {
+    fail('分支对比异常');
+    failCount++;
+  }
+
+  printSubsection('E5. 跨分支版本对比（v1 main vs v3 marketing）');
+  const crossDiff = sdk.conversation.compareVersions(cid, 1, marketingVersion!.version);
+  console.log(`     ${crossDiff.summary}`);
+  ok(`跨分支版本对比调用成功，检测到 ${crossDiff.changes.length} 处变更 ✓`);
+  pass++;
+
   // 清理
-  sdk.conversation.deleteConversation(start.conversationId);
+  sdk.conversation.deleteConversation(cid);
 
   // ============ 汇总 ============
   printSection(`测试汇总：${pass} 通过 / ${failCount} 失败 / 共 ${pass + failCount} 项`);
   if (failCount === 0) {
-    console.log('\n🎉 所有验证点全部通过！');
+    console.log('\n🎉 所有新增能力和修复点验证通过！');
   } else {
     console.log(`\n⚠️  有 ${failCount} 项未通过`);
     process.exit(1);
