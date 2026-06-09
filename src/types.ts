@@ -140,6 +140,57 @@ export interface TitleGenerationRequest {
   avoidExaggeration?: boolean;
 }
 
+export type TitleRiskTag =
+  | 'exaggeration'
+  | 'repetition'
+  | 'off_topic'
+  | 'too_long'
+  | 'too_short'
+  | 'emoji_overuse'
+  | 'punctuation_issue';
+
+export type TitleChannel =
+  | 'wechat'
+  | 'weibo'
+  | 'zhihu'
+  | 'xiaohongshu'
+  | 'douyin'
+  | 'official'
+  | 'news_media'
+  | 'general';
+
+export interface TitleChannelFit {
+  channel: TitleChannel;
+  fitScore: number;
+  reason: string;
+}
+
+export interface TitleQualityReview {
+  overallScore: number;
+  riskTags: TitleRiskTag[];
+  riskDetails: { tag: TitleRiskTag; description: string; severity: 'low' | 'medium' | 'high' }[];
+  topChannels: TitleChannelFit[];
+  keywordDiversityScore: number;
+  readabilityScore: number;
+  improvementSuggestions: string[];
+}
+
+export interface TitleRanking {
+  titleIndex: number;
+  finalScore: number;
+  rank: number;
+  reason: string;
+}
+
+export interface TitleBatchQuality {
+  averageScore: number;
+  diversityScore: number;
+  riskSummary: { tag: TitleRiskTag; count: number }[];
+  rankedTitles: TitleRanking[];
+  topRecommendation: { titleIndex: number; reason: string };
+  userFriendlySummary: string;
+}
+
 export interface TitleOption {
   title: string;
   style: TitleStyle;
@@ -147,6 +198,7 @@ export interface TitleOption {
   explanation: string;
   suitabilityScore: number;
   matchedKeywords: string[];
+  quality?: TitleQualityReview;
 }
 
 export interface KeywordCoverage {
@@ -162,6 +214,7 @@ export interface TitleGenerationResult {
   recommendation: string;
   bestPractice: string;
   keywordCoverage?: KeywordCoverage;
+  batchQuality?: TitleBatchQuality;
 }
 
 export interface CitationCheckRequest {
@@ -302,6 +355,15 @@ export interface BranchComparison {
   userFriendlySummary: string;
 }
 
+export interface SentenceLevelDiff {
+  type: 'added' | 'removed' | 'modified' | 'unchanged';
+  text: string;
+  position: number;
+  category?: 'content' | 'tone' | 'structure' | 'reference' | 'example';
+}
+
+export type RouteCategory = 'main' | 'marketing' | 'academic' | 'creative' | 'professional' | 'other';
+
 export interface RouteVersionInfo {
   branchId: string;
   version: number;
@@ -309,11 +371,33 @@ export interface RouteVersionInfo {
   summary: string;
   wordCount: number;
   keyChanges: string[];
+  category: RouteCategory;
+  categoryConfidence: number;
+  categoryReason: string;
   diffFromBase: {
     charsAdded: number;
     charsRemoved: number;
     overview: string;
   };
+  sentenceDiffs: SentenceLevelDiff[];
+  toneShift?: {
+    from: string;
+    to: string;
+    confidence: number;
+  };
+}
+
+export interface RouteCategoryGroup {
+  category: RouteCategory;
+  branches: string[];
+  description: string;
+  useCase: string;
+}
+
+export interface RouteSelectionAdvice {
+  recommendedBranch: string;
+  alternatives: { branchId: string; scenario: string }[];
+  userFriendlyAdvice: string;
 }
 
 export interface RouteComparison {
@@ -330,10 +414,28 @@ export interface RouteComparison {
     overview: string;
     keyDifferences: string[];
   }[];
+  categorizedRoutes: RouteCategoryGroup[];
+  selectionAdvice: RouteSelectionAdvice;
   userFriendlySummary: string;
 }
 
 export type PipelineStep = 'topic' | 'outline' | 'title';
+
+export type FailureCategory =
+  | 'invalid_input'
+  | 'empty_input'
+  | 'parameter_out_of_range'
+  | 'provider_error'
+  | 'parse_error'
+  | 'quality_check_failed'
+  | 'unknown';
+
+export interface RetrySuggestion {
+  shouldRetry: boolean;
+  action: 'fix_input' | 'retry_with_same_params' | 'adjust_quality_settings' | 'skip_step';
+  userFriendlySuggestion: string;
+  fixedParams?: Record<string, unknown>;
+}
 
 export interface TopicPipelineRequest {
   topic: string;
@@ -346,6 +448,8 @@ export interface TopicPipelineRequest {
   tone?: Tone;
   length?: ArticleLength;
   runSteps?: PipelineStep[];
+  retryOnlyFailedSteps?: boolean;
+  previousState?: TopicPipelineResult;
 }
 
 export interface PipelineStepResult {
@@ -355,6 +459,17 @@ export interface PipelineStepResult {
   errorCode?: string;
   errorMessage?: string;
   skippedReason?: string;
+  durationMs?: number;
+  failureCategory?: FailureCategory;
+  retrySuggestion?: RetrySuggestion;
+}
+
+export interface ExecutionTraceEvent {
+  timestamp: number;
+  step: PipelineStep;
+  event: 'start' | 'success' | 'failed' | 'skipped';
+  details?: string;
+  durationMs?: number;
 }
 
 export interface TopicPipelineResult {
@@ -367,6 +482,9 @@ export interface TopicPipelineResult {
   titles?: TitleGenerationResult;
   summary: string;
   userFriendlyStatus: string;
+  totalDurationMs?: number;
+  executionTrace?: ExecutionTraceEvent[];
+  retryableSteps?: PipelineStep[];
 }
 
 export interface PipelineRunResult {

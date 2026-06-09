@@ -1,4 +1,17 @@
-import { AIProvider, TitleGenerationRequest, TitleGenerationResult, TitleStyle, Tone, TitleOption } from '../types';
+import {
+  AIProvider,
+  TitleGenerationRequest,
+  TitleGenerationResult,
+  TitleStyle,
+  Tone,
+  TitleOption,
+  TitleRiskTag,
+  TitleChannel,
+  TitleChannelFit,
+  TitleQualityReview,
+  TitleBatchQuality,
+  TitleRanking,
+} from '../types';
 import { assertNonEmptyString, assertIntegerInRange, assertNonEmptyArray, SDKError, ERROR_CODES } from '../errors';
 
 const STYLE_DESCRIPTIONS: Record<TitleStyle, string> = {
@@ -148,6 +161,12 @@ ${styleDescriptions}
       result = { ...result, keywordCoverage: this.buildKeywordCoverage(result.titles, req.keywords) };
     }
 
+    result.titles = result.titles.map((t, idx) => ({
+      ...t,
+      quality: this.reviewTitleQuality(t, idx, result.titles, req.topic, req.keywords || []),
+    }));
+    result = { ...result, batchQuality: this.buildBatchQuality(result.titles, req.topic) };
+
     return result;
   }
 
@@ -157,10 +176,50 @@ ${styleDescriptions}
     topic: string,
     allowedStyles: TitleStyle[]
   ): TitleGenerationResult {
-    const fixedTitles = result.titles.map((t, idx) => {
-      const containsAny = keywords.some(kw => t.title.includes(kw));
-      if (containsAny) return t;
-      const kw = keywords[idx % keywords.length];
+    const coverageCount: Record<string, number> = {};
+    keywords.forEach(kw => { coverageCount[kw] = 0; });
+    result.titles.forEach(t => {
+      keywords.forEach(kw => {
+        if (t.title.includes(kw)) coverageCount[kw]++;
+      });
+    });
+
+    const fixedTitles = result.titles.map((t) => {
+      const alreadyHit = keywords.filter(kw => t.title.includes(kw));
+      if (alreadyHit.length >= 1) {
+        if (alreadyHit.length === 1) {
+          const missed = keywords.filter(kw => !t.title.includes(kw));
+          if (missed.length > 0) {
+            missed.sort((a, b) => (coverageCount[a] || 0) - (coverageCount[b] || 0));
+            const candidate = missed[0];
+            if ((coverageCount[candidate] || 0) === 0) {
+              const style = t.style;
+              let newTitle = t.title;
+              if (style === 'list' || style === 'howto') {
+                newTitle = `${t.title}：${candidate}实战指南`;
+              } else if (style === 'question') {
+                newTitle = `${t.title.replace(/？$/, '')}？顺便聊聊${candidate}`;
+              } else if (style === 'formal') {
+                newTitle = `${topic}研究：以${alreadyHit[0]}与${candidate}为核心的分析框架`;
+              } else {
+                newTitle = `${t.title.replace(/（附.*?）$/, '')}（附${candidate}实战技巧）`;
+              }
+              if (newTitle !== t.title) {
+                coverageCount[candidate] = (coverageCount[candidate] || 0) + 1;
+                return {
+                  ...t,
+                  title: newTitle,
+                  highlights: [...(t.highlights || []).slice(0, 2), `为提高覆盖率已植入关键词「${candidate}」`],
+                };
+              }
+            }
+          }
+        }
+        return t;
+      }
+
+      const missedSorted = keywords.slice().sort((a, b) => (coverageCount[a] || 0) - (coverageCount[b] || 0));
+      const kw = missedSorted[0];
       const style = t.style;
       let newTitle = t.title;
       if (style === 'list' || style === 'howto') {
@@ -172,6 +231,7 @@ ${styleDescriptions}
       } else {
         newTitle = `${t.title}（附${kw}实战技巧）`;
       }
+      coverageCount[kw] = (coverageCount[kw] || 0) + 1;
       return {
         ...t,
         title: newTitle,
@@ -347,6 +407,201 @@ ${styleDescriptions}
       missingKeywords,
       coverageRate: Math.round(coverageRate * 100) / 100,
       perTitleCoverage,
+    };
+  }
+
+  private EXAGGERATION_WORDS = [
+    '彻底', '完全', '100%', '百分之百', '绝对', '最强', '无敌', '史上最',
+    '爆', '炸', '疯传', '震惊', '颠覆', '革命性', '史无前例', '前无古人',
+    '秒杀', '碾压', '吊打', '宇宙第一', '全球最佳', '完美', '终极',
+  ];
+
+  private detectRisks(title: string, idx: number, allTitles: TitleOption[], topic: string): TitleQualityReview['riskDetails'] {
+    const risks: TitleQualityReview['riskDetails'] = [];
+    const lower = title;
+    const hasExag = this.EXAGGERATION_WORDS.some(w => lower.includes(w));
+    if (hasExag) {
+      const found = this.EXAGGERATION_WORDS.filter(w => lower.includes(w));
+      risks.push({ tag: 'exaggeration', description: `标题包含夸张词汇：${found.join('、')}`, severity: 'high' });
+    }
+    const dupIdx = allTitles.findIndex((t, i) => i !== idx && t.title === title);
+    if (dupIdx >= 0) {
+      risks.push({ tag: 'repetition', description: `与第 ${dupIdx + 1} 个标题完全重复`, severity: 'high' });
+    } else {
+      const similar = allTitles.filter((t, i) => i !== idx && t.title.substring(0, Math.min(10, t.title.length)) === title.substring(0, Math.min(10, title.length)));
+      if (similar.length >= 1) {
+        risks.push({ tag: 'repetition', description: `与其他 ${similar.length} 个标题开头高度雷同，缺乏区分度`, severity: 'medium' });
+      }
+    }
+    const topicInTitle = title.includes(topic.substring(0, 2)) || title.includes(topic);
+    if (!topicInTitle && topic.length > 1) {
+      risks.push({ tag: 'off_topic', description: `标题未明显体现主题「${topic}」，可能偏离读者预期`, severity: 'medium' });
+    }
+    if (title.length > 35) {
+      risks.push({ tag: 'too_long', description: `标题共 ${title.length} 字，超过大多数平台推荐的 20-25 字上限`, severity: 'medium' });
+    } else if (title.length < 6) {
+      risks.push({ tag: 'too_short', description: `标题仅 ${title.length} 字，信息量不足`, severity: 'medium' });
+    }
+    const emojiCount = (title.match(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu) || []).length;
+    if (emojiCount >= 3) {
+      risks.push({ tag: 'emoji_overuse', description: `包含 ${emojiCount} 个 emoji，可能影响专业感`, severity: 'low' });
+    }
+    const hasBadPunct = /[，。！？]{2,}/.test(title);
+    if (hasBadPunct) {
+      risks.push({ tag: 'punctuation_issue', description: '存在连续标点，表达不够规范', severity: 'low' });
+    }
+    return risks;
+  }
+
+  private detectChannelFit(title: string, style: TitleStyle, risks: TitleQualityReview['riskDetails']): TitleChannelFit[] {
+    const hasExag = risks.some(r => r.tag === 'exaggeration');
+    const isLong = title.length > 25;
+    const isShort = title.length <= 15;
+    const isQuestion = style === 'question' || /？|\?/.test(title);
+    const isList = style === 'list' || /\d+个|\d+条/.test(title);
+    const isFormal = style === 'formal' || style === 'news';
+
+    const all: { channel: TitleChannel; fitScore: number; reason: string }[] = [
+      { channel: 'wechat', fitScore: 70, reason: '微信公众号标题 15-25 字为佳，适合带有悬念或情绪钩子' },
+      { channel: 'weibo', fitScore: 65, reason: '微博标题偏短平快，支持话题标签和情绪表达' },
+      { channel: 'zhihu', fitScore: 60, reason: '知乎适合提问型或干货型标题，越具体越好' },
+      { channel: 'xiaohongshu', fitScore: 55, reason: '小红书适合清单、攻略、种草类标题，可适当使用 emoji' },
+      { channel: 'douyin', fitScore: 55, reason: '抖音标题要短、有冲突感，配合视频封面' },
+      { channel: 'official', fitScore: 60, reason: '官方渠道要求规范严谨，避免夸张和网络用语' },
+      { channel: 'news_media', fitScore: 60, reason: '新闻媒体要求客观中立，适合陈述事实' },
+      { channel: 'general', fitScore: 70, reason: '通用场景，适合大部分阅读类产品' },
+    ];
+
+    if (isQuestion) all.find(a => a.channel === 'zhihu')!.fitScore += 20;
+    if (isList) {
+      all.find(a => a.channel === 'xiaohongshu')!.fitScore += 15;
+      all.find(a => a.channel === 'wechat')!.fitScore += 10;
+    }
+    if (isFormal) {
+      all.find(a => a.channel === 'official')!.fitScore += 20;
+      all.find(a => a.channel === 'news_media')!.fitScore += 15;
+    }
+    if (isShort) {
+      all.find(a => a.channel === 'douyin')!.fitScore += 20;
+      all.find(a => a.channel === 'weibo')!.fitScore += 15;
+    }
+    if (isLong) {
+      all.find(a => a.channel === 'wechat')!.fitScore += 10;
+      all.find(a => a.channel === 'douyin')!.fitScore -= 15;
+    }
+    if (hasExag) {
+      all.find(a => a.channel === 'official')!.fitScore -= 30;
+      all.find(a => a.channel === 'news_media')!.fitScore -= 25;
+      all.find(a => a.channel === 'xiaohongshu')!.fitScore += 10;
+    }
+
+    return all
+      .map(a => ({ ...a, fitScore: Math.max(0, Math.min(100, a.fitScore)) }))
+      .sort((a, b) => b.fitScore - a.fitScore)
+      .slice(0, 3);
+  }
+
+  private calculateReadabilityScore(title: string): number {
+    let score = 70;
+    if (title.length >= 12 && title.length <= 25) score += 15;
+    if (/\d/.test(title)) score += 5;
+    if (/[，。！？、]/.test(title)) score += 5;
+    if (/[a-zA-Z]{5,}/.test(title)) score -= 5;
+    return Math.max(0, Math.min(100, score));
+  }
+
+  private reviewTitleQuality(t: TitleOption, idx: number, allTitles: TitleOption[], topic: string, keywords: string[]): TitleQualityReview {
+    const riskDetails = this.detectRisks(t.title, idx, allTitles, topic);
+    const riskTags = Array.from(new Set(riskDetails.map(r => r.tag)));
+    const topChannels = this.detectChannelFit(t.title, t.style, riskDetails);
+    const readabilityScore = this.calculateReadabilityScore(t.title);
+    const keywordDiversityScore = t.matchedKeywords.length > 0
+      ? Math.min(100, 40 + t.matchedKeywords.length * 20)
+      : 30;
+    const riskPenalty = riskDetails.reduce((acc, r) => acc + (r.severity === 'high' ? 15 : r.severity === 'medium' ? 8 : 3), 0);
+    const overallScore = Math.max(0, Math.min(100, Math.round(
+      (t.suitabilityScore * 0.4) + (readabilityScore * 0.2) + (keywordDiversityScore * 0.2) + (topChannels[0].fitScore * 0.2) - riskPenalty
+    )));
+
+    const improvementSuggestions: string[] = [];
+    if (riskDetails.find(r => r.tag === 'exaggeration')) {
+      improvementSuggestions.push('🚫 移除夸张词汇，改为更客观的表达');
+    }
+    if (riskDetails.find(r => r.tag === 'repetition')) {
+      improvementSuggestions.push('🔄 调整标题开头或结构，避免与其他标题雷同');
+    }
+    if (riskDetails.find(r => r.tag === 'off_topic')) {
+      improvementSuggestions.push(`🎯 建议在标题中直接出现主题词「${topic}」`);
+    }
+    if (riskDetails.find(r => r.tag === 'too_long')) {
+      improvementSuggestions.push('✂️ 压缩至 25 字以内，保留最核心信息');
+    }
+    if (keywords.length > 0 && t.matchedKeywords.length === 0) {
+      improvementSuggestions.push(`🔑 建议植入至少一个参考关键词（${keywords.join('/')}）`);
+    }
+    if (improvementSuggestions.length === 0) {
+      improvementSuggestions.push('✅ 当前标题质量良好，可根据目标渠道微调风格');
+    }
+
+    return {
+      overallScore,
+      riskTags,
+      riskDetails,
+      topChannels,
+      keywordDiversityScore,
+      readabilityScore,
+      improvementSuggestions,
+    };
+  }
+
+  private buildBatchQuality(titles: TitleOption[], topic: string): TitleBatchQuality {
+    const averageScore = Math.round(titles.reduce((acc, t) => acc + (t.quality?.overallScore || 0), 0) / titles.length);
+    const uniqueStyles = new Set(titles.map(t => t.style)).size;
+    const uniqueKeywords = new Set(titles.flatMap(t => t.matchedKeywords)).size;
+    const diversityScore = Math.min(100, (uniqueStyles / 7) * 50 + (uniqueKeywords / Math.max(1, titles.length)) * 50);
+
+    const riskMap: Record<string, number> = {};
+    titles.forEach(t => {
+      t.quality?.riskTags.forEach(tag => {
+        riskMap[tag] = (riskMap[tag] || 0) + 1;
+      });
+    });
+    const riskSummary = Object.entries(riskMap).map(([tag, count]) => ({ tag: tag as TitleRiskTag, count }));
+
+    const ranked: TitleRanking[] = titles
+      .map((t, idx) => ({
+        titleIndex: idx,
+        finalScore: t.quality?.overallScore ?? 0,
+        rank: 0,
+        reason: '',
+      }))
+      .sort((a, b) => b.finalScore - a.finalScore)
+      .map((r, i) => {
+        const t = titles[r.titleIndex];
+        const topChannel = t.quality?.topChannels?.[0];
+        const topKw = t.matchedKeywords.length > 0 ? `命中关键词「${t.matchedKeywords.join('/')}」` : '未命中关键词';
+        return {
+          ...r,
+          rank: i + 1,
+          reason: `综合评分 ${r.finalScore}/100，${topChannel ? `最适合「${topChannel.channel}」渠道，` : ''}${topKw}，风格 ${t.style}`,
+        };
+      });
+
+    const top = ranked[0];
+    const topTitle = titles[top.titleIndex];
+    const userFriendlySummary = `📊 整批 ${titles.length} 个标题质量报告
+平均评分：${averageScore}/100，风格多样性：${Math.round(diversityScore)}/100
+风险分布：${riskSummary.length > 0 ? riskSummary.map(r => `${r.tag}×${r.count}`).join('、') : '无明显风险'}
+🏆 推荐首推：第 ${top.rank} 个标题（${topTitle.style}风格），评分 ${top.finalScore}/100
+   ${top.reason}`;
+
+    return {
+      averageScore,
+      diversityScore: Math.round(diversityScore),
+      riskSummary,
+      rankedTitles: ranked.sort((a, b) => a.titleIndex - b.titleIndex),
+      topRecommendation: { titleIndex: top.titleIndex, reason: top.reason },
+      userFriendlySummary,
     };
   }
 }

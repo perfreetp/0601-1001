@@ -8,6 +8,10 @@ import {
   BranchComparison,
   RouteComparison,
   RouteVersionInfo,
+  SentenceLevelDiff,
+  RouteCategory,
+  RouteCategoryGroup,
+  RouteSelectionAdvice,
 } from '../types';
 import { assertNonEmptyString, SDKError, ERROR_CODES } from '../errors';
 
@@ -426,6 +430,9 @@ export class ConversationManager {
         : base;
       const keyChanges = latest === base ? [] : latest.changes;
       const { added, removed, overview } = this.calcDiff(base.content, latest.content);
+      const sentenceDiffs = this.calcSentenceDiffs(base.content, latest.content);
+      const category = this.categorizeRoute(branchId, latest.content);
+      const toneShift = this.detectToneShift(base.content, latest.content);
       return {
         branchId,
         version: latest.version,
@@ -433,11 +440,16 @@ export class ConversationManager {
         summary: this.buildSummary(latest.content, branchId),
         wordCount: this.countWords(latest.content),
         keyChanges: keyChanges.length > 0 ? keyChanges : ['与基准版本内容一致'],
+        category: category.category,
+        categoryConfidence: category.confidence,
+        categoryReason: category.reason,
+        toneShift,
         diffFromBase: {
           charsAdded: added,
           charsRemoved: removed,
           overview,
         },
+        sentenceDiffs,
       };
     });
 
@@ -458,9 +470,15 @@ export class ConversationManager {
       }
     }
 
+    const categorizedRoutes = this.buildCategoryGroups(routes);
+    const selectionAdvice = this.buildSelectionAdvice(routes, categorizedRoutes);
+
     const baseSummary = this.buildSummary(base.content, '基准');
     const routeSummaries = routes.map(r =>
-      `• ${r.branchId}（v${r.version}）：${r.diffFromBase.overview}，共 ${r.wordCount} 字，主要改动 ${r.keyChanges.length} 处`
+      `• ${r.branchId}（${r.category}，v${r.version}）：${r.diffFromBase.overview}，共 ${r.wordCount} 字，句子级改动 ${r.sentenceDiffs.filter(d => d.type !== 'unchanged').length} 处`
+    ).join('\n');
+    const categorySummaries = categorizedRoutes.map(g =>
+      `📂 ${g.category}（${g.description}）：${g.branches.join('、')}，适用场景：${g.useCase}`
     ).join('\n');
     const crossSummaries = crossRouteDiffs.map(d =>
       `· ${d.fromBranch} ↔ ${d.toBranch}：${d.keyDifferences[0] || d.overview}`
@@ -472,10 +490,13 @@ export class ConversationManager {
 🚀 各路线最新版：
 ${routeSummaries}
 
+🏷 路线自动归类：
+${categorySummaries}
+
 🔀 路线间差异：
 ${crossSummaries || '（仅有单一路线，无横向对比）'}
 
-💡 选择建议：若面向大众传播推荐营销分支；若面向学术发表推荐学术分支；若日常使用选主线即可。`;
+🎯 ${selectionAdvice.userFriendlyAdvice}`;
 
     return {
       conversationId,
@@ -484,16 +505,21 @@ ${crossSummaries || '（仅有单一路线，无横向对比）'}
       baseSummary,
       routes,
       crossRouteDiffs,
+      categorizedRoutes,
+      selectionAdvice,
       userFriendlySummary,
     };
   }
 
-  private calcDiff(a: string, b: string): { added: number; removed: number; overview: string } {
+  private calcDiff(a: string, b: string): { added: number; removed: number; overview: string; isDifferent: boolean } {
     const added = Math.max(0, b.length - a.length);
     const removed = Math.max(0, a.length - b.length);
+    const isDifferent = a !== b;
     let overview: string;
-    if (added === 0 && removed === 0) {
+    if (!isDifferent) {
       overview = '与基准完全相同';
+    } else if (added === 0 && removed === 0) {
+      overview = '篇幅相同但内容有改写';
     } else if (added > removed) {
       overview = `新增约 ${added} 字，删减约 ${removed} 字，整体篇幅扩充`;
     } else if (removed > added) {
@@ -501,7 +527,7 @@ ${crossSummaries || '（仅有单一路线，无横向对比）'}
     } else {
       overview = `新增约 ${added} 字，删减约 ${removed} 字，整体篇幅相当但内容有改写`;
     }
-    return { added, removed, overview };
+    return { added, removed, overview, isDifferent };
   }
 
   private buildSummary(content: string, label: string): string {
@@ -539,5 +565,127 @@ ${crossSummaries || '（仅有单一路线，无横向对比）'}
       diffs.push(`两条路线整体方向相近，细节改动各有侧重`);
     }
     return diffs;
+  }
+
+  private splitSentences(text: string): string[] {
+    const cleaned = text.replace(/\n+/g, ' ').trim();
+    if (!cleaned) return [];
+    const parts = cleaned.split(/(?<=[。！？!?；;])\s*/).filter(s => s.trim().length > 0);
+    return parts.length === 0 ? [cleaned] : parts;
+  }
+
+  private classifySentence(sentence: string, category: 'added' | 'removed'): SentenceLevelDiff['category'] {
+    if (/参考文献|et al|\(.*\d{4}\)|r = |p < |标准差|显著性/.test(sentence)) return 'reference';
+    if (/\d+天|\d+步|方法|步骤|实践|落地|操作/.test(sentence)) return 'example';
+    if (/卖点|痛点|CTA|行动号召|见证|提升|效果|神器|见证/.test(sentence)) return 'tone';
+    if (/结构|大纲|章节|分为|首先|其次|最后|第一|第二|第三/.test(sentence)) return 'structure';
+    return 'content';
+  }
+
+  private calcSentenceDiffs(a: string, b: string): SentenceLevelDiff[] {
+    const sentA = this.splitSentences(a);
+    const sentB = this.splitSentences(b);
+    const setA = new Set(sentA.map(s => s.trim()));
+    const setB = new Set(sentB.map(s => s.trim()));
+    const diffs: SentenceLevelDiff[] = [];
+    let position = 0;
+    sentA.forEach(s => {
+      const key = s.trim();
+      if (!setB.has(key)) {
+        diffs.push({ type: 'removed', text: s, position: position++, category: this.classifySentence(s, 'removed') });
+      } else {
+        diffs.push({ type: 'unchanged', text: s, position: position++, category: 'content' });
+      }
+    });
+    sentB.forEach(s => {
+      const key = s.trim();
+      if (!setA.has(key)) {
+        diffs.push({ type: 'added', text: s, position: position++, category: this.classifySentence(s, 'added') });
+      }
+    });
+    return diffs;
+  }
+
+  private categorizeRoute(branchId: string, content: string): { category: RouteCategory; confidence: number; reason: string } {
+    const lowerId = branchId.toLowerCase();
+    if (/market|营销|推广|转化|文案/.test(lowerId) || /营销风格|卖点|痛点|行动号召|CTA|神器|10000\+/.test(content)) {
+      return { category: 'marketing', confidence: 0.9, reason: '包含营销风格润色、卖点包装、行动号召等特征' };
+    }
+    if (/academ|学术|论文|研究|科学/.test(lowerId) || /学术风格|参考文献|Chen et al|r = 0\.|p < |显著性|标准差/.test(content)) {
+      return { category: 'academic', confidence: 0.9, reason: '包含学术风格润色、规范引用、实证数据等特征' };
+    }
+    if (/main|主线|通用|默认/.test(lowerId) || /主线通用润色|三步法|劳逸结合|通用场景/.test(content)) {
+      return { category: 'main', confidence: 0.85, reason: '主线通用路线，包含可落地操作方法' };
+    }
+    if (/creat|创意|故事|文学|小说|软文/.test(lowerId) || /故事叙事|创意|文学手法/.test(content)) {
+      return { category: 'creative', confidence: 0.7, reason: '包含创意表达或故事叙事特征' };
+    }
+    if (/prof|专业|职业|行业|报告/.test(lowerId) || /行业报告|专业分析|白皮书/.test(content)) {
+      return { category: 'professional', confidence: 0.7, reason: '包含专业分析或行业报告特征' };
+    }
+    return { category: 'other', confidence: 0.5, reason: '未匹配到明确路线特征，归为其他' };
+  }
+
+  private detectToneShift(a: string, b: string): RouteVersionInfo['toneShift'] {
+    const classifyTone = (t: string): string => {
+      if (/营销风格|卖点|痛点|行动号召|神器|爆款|吸睛/.test(t)) return '营销推广';
+      if (/学术风格|参考文献|实证|显著性|标准差|严谨/.test(t)) return '学术严谨';
+      if (/主线通用润色|三步法|劳逸结合|清晰自然|通用/.test(t)) return '通用清晰';
+      if (/幽默|轻松|段子|趣味/.test(t)) return '轻松幽默';
+      return '客观陈述';
+    };
+    const from = classifyTone(a);
+    const to = classifyTone(b);
+    if (from === to) return undefined;
+    return { from, to, confidence: 0.8 };
+  }
+
+  private buildCategoryGroups(routes: RouteVersionInfo[]): RouteCategoryGroup[] {
+    const CATEGORY_META: Record<RouteCategory, { description: string; useCase: string }> = {
+      main: { description: '主线通用路线，平衡可读性与实用性', useCase: '日常内容、公众号文章、内部分享' },
+      marketing: { description: '营销推广路线，突出卖点与转化', useCase: '投放广告、产品介绍、落地页文案' },
+      academic: { description: '学术研究路线，强调引用与严谨', useCase: '学术论文、研究报告、专业分析' },
+      creative: { description: '创意表达路线，故事化与个性化', useCase: '品牌故事、人物专访、内容专栏' },
+      professional: { description: '专业行业路线，面向垂直从业者', useCase: '行业报告、专业白皮书、深度分析' },
+      other: { description: '其他路线，暂未归类', useCase: '需人工判断适用场景' },
+    };
+    const groupsMap: Record<string, string[]> = {};
+    routes.forEach(r => {
+      if (!groupsMap[r.category]) groupsMap[r.category] = [];
+      groupsMap[r.category].push(r.branchId);
+    });
+    return Object.entries(groupsMap).map(([cat, branches]) => ({
+      category: cat as RouteCategory,
+      branches,
+      description: CATEGORY_META[cat as RouteCategory].description,
+      useCase: CATEGORY_META[cat as RouteCategory].useCase,
+    }));
+  }
+
+  private buildSelectionAdvice(routes: RouteVersionInfo[], groups: RouteCategoryGroup[]): RouteSelectionAdvice {
+    const mainRoute = routes.find(r => r.category === 'main');
+    const marketingRoute = routes.find(r => r.category === 'marketing');
+    const academicRoute = routes.find(r => r.category === 'academic');
+    let recommended: RouteVersionInfo | undefined = mainRoute || routes[0];
+    if (!recommended) recommended = routes[0];
+    const alternatives: { branchId: string; scenario: string }[] = [];
+    if (marketingRoute && marketingRoute.branchId !== recommended.branchId) {
+      alternatives.push({ branchId: marketingRoute.branchId, scenario: '需要对外投放、追求点击率与转化时' });
+    }
+    if (academicRoute && academicRoute.branchId !== recommended.branchId) {
+      alternatives.push({ branchId: academicRoute.branchId, scenario: '需要提交论文、研究报告或专业评审时' });
+    }
+    if (mainRoute && mainRoute.branchId !== recommended.branchId) {
+      alternatives.push({ branchId: mainRoute.branchId, scenario: '日常通用阅读、内部分享或公众号推文时' });
+    }
+    const userFriendlyAdvice = `🏆 推荐分支：${recommended.branchId}（${recommended.category}，${recommended.categoryReason}）
+🤔 其他选择：
+${alternatives.map(a => `  · ${a.branchId}：${a.scenario}`).join('\n') || '  （仅有一个推荐路线）'}
+💡 建议先根据目标渠道和受众选择对应类别，再在该类别内挑选版本。`;
+    return {
+      recommendedBranch: recommended.branchId,
+      alternatives,
+      userFriendlyAdvice,
+    };
   }
 }

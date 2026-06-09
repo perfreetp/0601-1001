@@ -450,6 +450,167 @@ async function main() {
     failCount++;
   }
 
+  // ============ I. 标题质量复核 ============
+  printSection('I. 标题质量复核：风险标签 + 渠道适配 + 整批评分排序');
+
+  printSubsection('I1. 每个标题都有 riskTags、topChannels、overallScore');
+  const qualityTitles = await sdk.title.generate({
+    topic: '远程办公效率',
+    count: 3,
+    styles: ['catchy', 'formal', 'question'],
+    keywords: ['效率', '协作'],
+    mustIncludeKeywords: true,
+  });
+  qualityTitles.titles.forEach((t, idx) => {
+    console.log(`     #${idx + 1} [${t.style}] "${t.title.substring(0, 30)}…" 综合评分 ${t.quality?.overallScore}，风险标签：${t.quality?.riskTags.join('、') || '无'}，最佳渠道：${t.quality?.topChannels?.[0].channel || '未知'}（${t.quality?.topChannels?.[0].fitScore}分）`);
+    console.log(`        命中关键词：${t.matchedKeywords.join('、') || '无'}，改进建议：${t.quality?.improvementSuggestions?.[0] || '无'}`);
+  });
+  const allHaveQuality = qualityTitles.titles.every(t => t.quality && t.quality.riskTags && t.quality.topChannels && t.quality.overallScore > 0);
+  if (allHaveQuality) {
+    ok('每个标题都返回了 quality（风险标签 + 渠道适配 + 综合评分） ✓');
+    pass++;
+  } else {
+    fail('有标题缺少 quality 字段');
+    failCount++;
+  }
+
+  printSubsection('I2. 整批有 batchQuality：平均分、风险分布、推荐排序、首推标题');
+  const bq = qualityTitles.batchQuality;
+  console.log(bq?.userFriendlySummary.split('\n').map(l => '     ' + l).join('\n'));
+  if (bq && bq.averageScore > 0 && bq.rankedTitles.length === 3 && bq.topRecommendation != null) {
+    ok(`整批返回平均分 ${bq.averageScore}、多样性 ${bq.diversityScore}、推荐排序已生成，首推第 ${bq.topRecommendation.titleIndex + 1} 个 ✓`);
+    pass++;
+  } else {
+    fail('整批缺少 batchQuality 或字段不完整');
+    failCount++;
+  }
+
+  printSubsection('I3. 关键词分散分配：命中第一个关键词的标题也尽量植入剩余未覆盖关键词');
+  const scatterTitles = await sdk.title.generate({
+    topic: '时间管理',
+    count: 3,
+    styles: ['list', 'howto', 'question'],
+    keywords: ['效率', '专注', '平衡'],
+    mustIncludeKeywords: true,
+  });
+  const coveredAfterScatter = scatterTitles.keywordCoverage?.coveredKeywords || [];
+  console.log(`     3 个标题，3 个关键词，实际覆盖：${coveredAfterScatter.join('、') || '无'}，覆盖率 ${scatterTitles.keywordCoverage?.coverageRate}`);
+  scatterTitles.titles.forEach((t, idx) => console.log(`       #${idx + 1} 命中：${t.matchedKeywords.join('、') || '（无）'}`));
+  if ((scatterTitles.keywordCoverage?.coverageRate || 0) >= 0.66) {
+    ok('关键词分散分配生效，覆盖率 ≥ 66% ✓');
+    pass++;
+  } else {
+    fail('关键词分散覆盖不足，覆盖率 < 66%');
+    failCount++;
+  }
+
+  // ============ J. 会话句子级差异 + 路线归类 + 选择建议 ============
+  printSection('J. 会话句子级差异 + 路线自动归类 + 选择建议');
+
+  printSubsection('J1. 每条路线都有句子级差异（added/removed/unchanged）+ 类别归类');
+  const initialDraft3 = '时间管理的核心是管理注意力。注意力有限，所以要优先做重要的事。';
+  const start3 = sdk.conversation.startConversation(initialDraft3);
+  const cid3 = start3.conversationId;
+  await sdk.conversation.continueConversation({ conversationId: cid3, instruction: '继续改稿，主线润色，让表达更清晰自然' });
+  await sdk.conversation.continueConversation({ conversationId: cid3, baseVersion: 1, branchId: 'marketing', instruction: '改成营销风格文案，突出卖点和行动号召' });
+  await sdk.conversation.continueConversation({ conversationId: cid3, baseVersion: 1, branchId: 'academic', instruction: '改成学术论文风格，补充引用和研究数据' });
+
+  const routeComp2 = sdk.conversation.compareRoutes(cid3, 1);
+  routeComp2.routes.forEach(r => {
+    const changedCount = r.sentenceDiffs.filter(d => d.type !== 'unchanged').length;
+    console.log(`     路线 ${r.branchId} → 类别 ${r.category}（置信 ${r.categoryConfidence}，${r.categoryReason}），字数 ${r.wordCount}，句子级改动 ${changedCount} 处`);
+    r.sentenceDiffs.filter(d => d.type !== 'unchanged').slice(0, 2).forEach(d =>
+      console.log(`       ${d.type === 'added' ? '➕ 新增' : '➖ 删除'} [${d.category || 'content'}]：${d.text.substring(0, 25)}…`)
+    );
+    if (r.toneShift) console.log(`       语气变化：${r.toneShift.from} → ${r.toneShift.to}`);
+  });
+  const allHaveCats = routeComp2.routes.every(r => r.category && r.sentenceDiffs.length > 0 && r.categoryConfidence > 0);
+  if (allHaveCats) {
+    ok('每条路线都返回了句子级 diff + 类别归类 + 置信度 ✓');
+    pass++;
+  } else {
+    fail('有路线缺少 category 或 sentenceDiffs');
+    failCount++;
+  }
+
+  printSubsection('J2. categorizedRoutes 按类别聚合 + selectionAdvice 给出推荐分支');
+  console.log(`     类别分组：${routeComp2.categorizedRoutes.map(g => `${g.category}（${g.branches.join('、')}）`).join('，')}`);
+  console.log(routeComp2.selectionAdvice.userFriendlyAdvice.split('\n').map(l => '     ' + l).join('\n'));
+  if (routeComp2.categorizedRoutes.length >= 2 && routeComp2.selectionAdvice.recommendedBranch) {
+    ok('返回了 categorizedRoutes（至少 2 个类别）+ selectionAdvice（推荐分支 + 备选场景） ✓');
+    pass++;
+  } else {
+    fail('categorizedRoutes 或 selectionAdvice 缺失');
+    failCount++;
+  }
+
+  sdk.conversation.deleteConversation(cid3);
+
+  // ============ K. 批量可观测性 + 补跑失败步骤 ============
+  printSection('K. 批量可观测性：耗时 + 失败分类 + 重试建议 + 补跑支持');
+
+  printSubsection('K1. 每个步骤返回 durationMs，失败步骤有 failureCategory 和 retrySuggestion');
+  const themedObs = await sdk.batch.runThemed([
+    { topic: 'AI 写作工具', chapterCount: 3, titleCount: 3 },
+    { topic: '', chapterCount: 2, titleCount: 2 },
+  ]);
+  console.log(themedObs.userFriendlyReport.split('\n').map(l => '     ' + l).join('\n'));
+
+  const successTopicK = themedObs.topics.find(t => t.topic === 'AI 写作工具');
+  const failedTopicK = themedObs.topics.find(t => t.topic === '');
+  const allHaveDur = successTopicK && (['topic', 'outline', 'title'] as const).every(s => typeof successTopicK.results[s].durationMs === 'number');
+  if (allHaveDur && successTopicK?.totalDurationMs != null && successTopicK.executionTrace && successTopicK.executionTrace.length >= 3) {
+    ok(`成功主题：每步骤都有 durationMs，总耗时 ${successTopicK.totalDurationMs}ms，executionTrace 有 ${successTopicK.executionTrace.length} 个事件 ✓`);
+    pass++;
+  } else {
+    fail('成功主题缺少 durationMs 或 executionTrace');
+    failCount++;
+  }
+
+  const failedTopicK_topic = failedTopicK?.results.topic;
+  if (failedTopicK_topic?.status === 'failed' && failedTopicK_topic.failureCategory && failedTopicK_topic.retrySuggestion) {
+    console.log(`     失败主题 topic：failureCategory=${failedTopicK_topic.failureCategory}，建议：${failedTopicK_topic.retrySuggestion.userFriendlySuggestion}`);
+    ok(`失败步骤返回 failureCategory（${failedTopicK_topic.failureCategory}）+ retrySuggestion + retryableSteps ✓`);
+    pass++;
+  } else {
+    fail('失败步骤缺少 failureCategory 或 retrySuggestion');
+    failCount++;
+  }
+
+  printSubsection('K2. retryOnlyFailedSteps：只补跑失败步骤，复用已成功结果');
+  const simulatedPrev: any = {
+    topic: 'AI 写作补跑测试',
+    status: 'partial',
+    steps: ['topic', 'outline', 'title'] as any,
+    results: {
+      topic: { step: 'topic', status: 'success', result: successTopicK?.topicAnalysis, durationMs: 50 },
+      outline: { step: 'outline', status: 'success', result: successTopicK?.outline, durationMs: 60 },
+      title: { step: 'title', status: 'failed', errorCode: 'KEYWORD_MISSING', errorMessage: '标题关键词缺失', failureCategory: 'quality_check_failed' },
+    },
+    topicAnalysis: successTopicK?.topicAnalysis,
+    outline: successTopicK?.outline,
+  };
+  const retryResult = await sdk.batch.runThemed([
+    {
+      topic: 'AI 写作补跑测试',
+      chapterCount: 2,
+      titleCount: 2,
+      retryOnlyFailedSteps: true,
+      previousState: simulatedPrev,
+    },
+  ]);
+  const retryTopic = retryResult.topics[0];
+  const traceReused = retryTopic.executionTrace?.filter(e => e.details?.includes('复用'));
+  console.log(`     补跑结果：状态 ${retryTopic.status}，复用事件数 ${traceReused?.length || 0}，新总耗时 ${retryTopic.totalDurationMs}ms`);
+  retryTopic.executionTrace?.forEach(e => console.log(`       [${new Date(e.timestamp).toLocaleTimeString()}] ${e.step} ${e.event}${e.details ? ' — ' + e.details : ''}${e.durationMs ? ` (${e.durationMs}ms)` : ''}`));
+  if (retryTopic.status === 'success' && (traceReused?.length || 0) >= 2) {
+    ok('补跑模式复用了之前成功的 topic/outline 步骤结果，仅补跑了 title ✓');
+    pass++;
+  } else {
+    fail(`补跑结果异常：status=${retryTopic.status}，复用事件=${traceReused?.length || 0}`);
+    failCount++;
+  }
+
   // ============ 汇总 ============
   printSection(`测试汇总：${pass} 通过 / ${failCount} 失败 / 共 ${pass + failCount} 项`);
   if (failCount === 0) {
