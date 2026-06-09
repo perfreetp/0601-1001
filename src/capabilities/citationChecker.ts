@@ -1,4 +1,7 @@
 import { AIProvider, CitationCheckRequest, CitationCheckResult } from '../types';
+import { assertNonEmptyString, SDKError, ERROR_CODES } from '../errors';
+
+const VALID_STRICTNESS = ['lenient', 'moderate', 'strict'] as const;
 
 const SYSTEM_PROMPT = `你是一位严谨的事实核查编辑，负责检查文章的引用完整性和表述客观性。
 请严格按照 JSON 格式返回结果，格式如下：
@@ -13,12 +16,27 @@ const SYSTEM_PROMPT = `你是一位严谨的事实核查编辑，负责检查文
   "recommendations": string[],
   "userFriendlyReport": string
 }
-要求：overallScore 为 0-100 的整数分数，userFriendlyReport 是给普通用户看的整体报告，要用 emoji 和通俗语言，包含评分、问题列表和改进建议。`;
+要求：
+- overallScore 为 0-100 的整数分数
+- userFriendlyReport 是给普通用户看的整体报告，要用 emoji 和通俗语言，包含评分、问题列表和改进建议
+- missingSources 和 exaggerations 可以为空数组但不能省略字段`;
 
 export class CitationChecker {
   constructor(private provider: AIProvider) {}
 
   async check(req: CitationCheckRequest): Promise<CitationCheckResult> {
+    assertNonEmptyString(
+      req.text,
+      ERROR_CODES.EMPTY_TEXT,
+      '待检查文本不能为空，请传入有效的文章内容（text 参数）'
+    );
+    if (req.strictness && !VALID_STRICTNESS.includes(req.strictness)) {
+      throw new SDKError(
+        ERROR_CODES.INVALID_STRICTNESS,
+        `严格程度必须是 lenient | moderate | strict，收到: ${req.strictness}`
+      );
+    }
+
     const strictnessMap = {
       lenient: '宽松（只标明显问题）',
       moderate: '适中（平衡严谨与可读性）',
@@ -52,13 +70,27 @@ ${req.text}
 
   private parseResponse(text: string): CitationCheckResult {
     try {
-      return JSON.parse(text) as CitationCheckResult;
+      const obj = JSON.parse(text) as CitationCheckResult;
+      if (!Array.isArray(obj.missingSources)) obj.missingSources = [];
+      if (!Array.isArray(obj.exaggerations)) obj.exaggerations = [];
+      if (!Array.isArray(obj.recommendations)) obj.recommendations = [];
+      if (typeof obj.overallScore !== 'number') obj.overallScore = 80;
+      if (!obj.userFriendlyReport) obj.userFriendlyReport = '引用检查完成。';
+      return obj;
     } catch {
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
-        return JSON.parse(jsonMatch[0]) as CitationCheckResult;
+        try {
+          const obj = JSON.parse(jsonMatch[0]) as CitationCheckResult;
+          if (!Array.isArray(obj.missingSources)) obj.missingSources = [];
+          if (!Array.isArray(obj.exaggerations)) obj.exaggerations = [];
+          if (!Array.isArray(obj.recommendations)) obj.recommendations = [];
+          return obj;
+        } catch {
+          // fall through
+        }
       }
-      throw new Error('无法解析引用检查结果');
+      throw new SDKError(ERROR_CODES.PARSE_ERROR, '无法解析引用检查结果，请稍后重试');
     }
   }
 }

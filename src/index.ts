@@ -38,6 +38,7 @@ export class WritingAISDK {
 }
 
 export * from './types';
+export { SDKError, ERROR_CODES } from './errors';
 export { createProvider, MockAIProvider, OpenAIProvider } from './provider';
 export { TopicAnalyzer } from './capabilities/topicAnalyzer';
 export { OutlineGenerator } from './capabilities/outlineGenerator';

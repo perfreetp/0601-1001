@@ -212,6 +212,7 @@ export interface VersionComparison {
 export interface ConversationResult {
   conversationId: string;
   response: string;
+  revisedContent: string;
   userFriendlyChanges: string[];
   currentVersion: number;
   versions: ArticleVersion[];

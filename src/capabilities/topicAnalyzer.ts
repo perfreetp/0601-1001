@@ -1,4 +1,5 @@
 import { AIProvider, TopicAnalysisRequest, TopicAnalysisResult } from '../types';
+import { assertNonEmptyString, SDKError, ERROR_CODES } from '../errors';
 
 const SYSTEM_PROMPT = `你是一位资深的内容策略分析师，擅长分析写作主题的受众、切入角度和关键词。
 请严格按照 JSON 格式返回分析结果，格式如下：
@@ -14,6 +15,12 @@ export class TopicAnalyzer {
   constructor(private provider: AIProvider) {}
 
   async analyze(req: TopicAnalysisRequest): Promise<TopicAnalysisResult> {
+    assertNonEmptyString(
+      req.topic,
+      ERROR_CODES.EMPTY_TOPIC,
+      '主题不能为空，请传入有效的写作主题（topic 参数）'
+    );
+
     const userPrompt = `请分析以下写作主题：
 
 主题：${req.topic}
@@ -38,9 +45,13 @@ ${req.context ? `补充背景：${req.context}` : ''}
     } catch {
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
-        return JSON.parse(jsonMatch[0]) as TopicAnalysisResult;
+        try {
+          return JSON.parse(jsonMatch[0]) as TopicAnalysisResult;
+        } catch {
+          // fall through
+        }
       }
-      throw new Error('无法解析主题分析结果');
+      throw new SDKError(ERROR_CODES.PARSE_ERROR, '无法解析主题分析结果，请稍后重试');
     }
   }
 }

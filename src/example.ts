@@ -1,183 +1,259 @@
-import { WritingAISDK } from './index';
+import { WritingAISDK, SDKError, ERROR_CODES } from './index';
 
 function printSection(title: string) {
-  console.log('\n' + '='.repeat(60));
+  console.log('\n' + '='.repeat(70));
   console.log('  ' + title);
-  console.log('='.repeat(60));
+  console.log('='.repeat(70));
 }
 
 function printSubsection(title: string) {
   console.log('\n--- ' + title + ' ---');
 }
 
+function ok(msg: string) {
+  console.log(`  ✅ ${msg}`);
+}
+
+function fail(msg: string) {
+  console.log(`  ❌ ${msg}`);
+}
+
 async function main() {
-  console.log('\n🤖 AI 写作平台 SDK 使用示例');
+  console.log('\n🤖 AI 写作平台 SDK - 完善功能验证');
   console.log('使用 Mock Provider 运行（无需 API Key）');
 
   const sdk = new WritingAISDK({ provider: 'mock' });
+  let pass = 0;
+  let failCount = 0;
 
-  // ============ 1. 主题分析 ============
-  printSection('1. 主题分析');
-  const topicResult = await sdk.topic.analyze({
-    topic: '如何高效工作',
-    context: '面向职场人士的深度长文',
-  });
-  printSubsection('目标受众');
-  topicResult.audiences.forEach(a => {
-    console.log(`  👤 ${a.name}: ${a.description}`);
-    console.log(`     特征: ${a.characteristics.join('、')}`);
-    console.log(`     痛点: ${a.painPoints.join('、')}`);
-  });
-  printSubsection('切入角度');
-  topicResult.angles.forEach(a => {
-    console.log(`  📐 ${a.title}`);
-    console.log(`     ${a.description}`);
-    console.log(`     独特性: ${a.uniqueness}`);
-  });
-  printSubsection('关键词');
-  console.log(`  🔑 核心: ${topicResult.keywords.primary.join('、')}`);
-  console.log(`  📎 次级: ${topicResult.keywords.secondary.join('、')}`);
-  console.log(`  🎯 长尾: ${topicResult.keywords.longTail.join('、')}`);
-  console.log(`\n  📝 总结: ${topicResult.summary}`);
+  // ============ 1. 大纲生成：严格对齐 chapterCount ============
+  printSection('1. 大纲生成：chapterCount 参数严格对齐');
 
-  // ============ 2. 大纲生成 ============
-  printSection('2. 大纲生成');
-  const outlineResult = await sdk.outline.generate({
-    topic: '如何高效工作',
-    chapterCount: 5,
-    tone: 'persuasive',
-    length: 'medium',
-    audience: '职场新人',
-  });
-  console.log(`  📖 标题: ${outlineResult.title}`);
-  console.log(`  📝 引言: ${outlineResult.introduction}`);
-  printSubsection('章节');
-  outlineResult.chapters.forEach(ch => {
-    console.log(`  ${ch.index}. ${ch.title}（${ch.estimatedLength}）`);
-    console.log(`     目的: ${ch.purpose}`);
-    console.log(`     要点: ${ch.keyPoints.join('；')}`);
-  });
-  console.log(`\n  🏁 结语: ${outlineResult.conclusion}`);
-  console.log(`  📊 预估字数: ${outlineResult.totalEstimatedWords} 字`);
-  console.log(`  💡 结构说明: ${outlineResult.structureNote}`);
+  for (const n of [2, 3, 7]) {
+    const res = await sdk.outline.generate({ topic: '远程办公效率', chapterCount: n });
+    if (res.chapters.length === n) {
+      ok(`请求 ${n} 章，返回 ${res.chapters.length} 章 ✓`);
+      pass++;
+    } else {
+      fail(`请求 ${n} 章，但返回 ${res.chapters.length} 章`);
+      failCount++;
+    }
+    console.log(`     章节: ${res.chapters.map(c => `#${c.index}`).join(' ')}`);
+  }
 
-  // ============ 3. 段落扩写 ============
-  printSection('3. 段落扩写');
-  const expandResult = await sdk.expand.expand({
-    bulletPoints: [
-      '习惯养成需要 66 天而非 21 天',
-      '大脑神经通路重塑需要时间',
-      '应该放下焦虑，关注每天的小进步',
-    ],
-    versions: 3,
-    tone: 'objective',
-  });
-  expandResult.expandedVersions.forEach(v => {
-    printSubsection(`版本 ${v.version}：${v.style}`);
-    console.log(`  ${v.content}`);
-    console.log(`  ✨ 亮点: ${v.highlights.join('、')}`);
-  });
-  printSubsection('选择建议');
-  expandResult.recommendations.forEach(r => console.log(`  💡 ${r}`));
+  // ============ 2. 段落扩写：versions 参数严格对齐 ============
+  printSection('2. 段落扩写：versions 参数严格对齐');
 
-  // ============ 4. 润色能力 ============
-  printSection('4. 润色能力');
-  const polishResult = await sdk.polish.polish({
-    text: '高效工作的核心不在于做更多的事，而在于做正确的事。许多人误以为忙碌就是 productive，实际上大部分忙碌只是在逃避真正重要的任务。',
-    options: {
-      fixTypos: true,
-      removeRepetition: true,
-      fixLogicJumps: true,
-    },
-  });
-  console.log(`  ✏️ 润色后文本:\n  ${polishResult.polishedText}`);
-  printSubsection('修改说明（用户友好）');
-  polishResult.userFriendlyChanges.forEach(c => console.log(`  ${c}`));
-  printSubsection('详细问题');
-  console.log(`  📊 共 ${polishResult.summary.totalImprovements} 处改进`);
-  console.log(`     错别字: ${polishResult.summary.typoCount}`);
-  console.log(`     重复冗余: ${polishResult.summary.repetitionCount}`);
-  console.log(`     逻辑修复: ${polishResult.summary.logicFixes}`);
-  polishResult.issues.forEach(issue => {
-    console.log(`  [${issue.type}] ${issue.severity}: "${issue.original}" → "${issue.suggestion}"`);
-    console.log(`     原因: ${issue.reason}`);
-  });
+  for (const n of [1, 2, 5]) {
+    const res = await sdk.expand.expand({
+      bulletPoints: ['习惯养成需要时间', '耐心很重要'],
+      versions: n,
+    });
+    if (res.expandedVersions.length === n) {
+      ok(`请求 ${n} 个版本，返回 ${res.expandedVersions.length} 个 ✓`);
+      pass++;
+    } else {
+      fail(`请求 ${n} 个版本，但返回 ${res.expandedVersions.length} 个`);
+      failCount++;
+    }
+    console.log(`     风格: ${res.expandedVersions.map(v => v.style).join('、')}`);
+  }
 
-  // ============ 5. 标题能力 ============
-  printSection('5. 标题生成');
-  const titleResult = await sdk.title.generate({
-    topic: '高效工作方法论',
-    styles: ['catchy', 'howto', 'question', 'list', 'story'],
-    count: 5,
-    tone: 'persuasive',
-  });
-  titleResult.titles.forEach(t => {
-    console.log(`  📌 ${t.title}`);
-    console.log(`     风格: ${t.style} | 评分: ${t.suitabilityScore}/100`);
-    console.log(`     亮点: ${t.highlights.join('、')}`);
-    console.log(`     解读: ${t.explanation}`);
-  });
-  printSubsection('推荐');
-  console.log(`  🏆 ${titleResult.recommendation}`);
-  console.log(`  📚 ${titleResult.bestPractice}`);
+  // ============ 3. 标题生成：count 和 styles 参数严格对齐 ============
+  printSection('3. 标题生成：count 和 styles 参数严格对齐');
 
-  // ============ 6. 引用检查 ============
-  printSection('6. 引用检查');
-  const citationResult = await sdk.citation.check({
-    text: '研究表明，番茄工作法能提高 30% 的工作效率。大多数成功人士都有早起的习惯。这个方法能彻底改变你的人生。所有人都应该尝试这个技巧。',
-    strictness: 'moderate',
-  });
-  console.log(citationResult.userFriendlyReport);
-  printSubsection('缺少来源');
-  citationResult.missingSources.forEach(m => {
-    console.log(`  ❓ [${m.impact}] ${m.claim}`);
-    console.log(`     建议: ${m.suggestion}`);
-  });
-  printSubsection('夸大表述');
-  citationResult.exaggerations.forEach(e => {
-    console.log(`  ⚠️ "${e.original}" → "${e.alternative}"`);
-    console.log(`     原因: ${e.reason}`);
-  });
+  const titleRes1 = await sdk.title.generate({ topic: '个人知识管理', styles: ['formal', 'howto'], count: 2 });
+  const allStylesMatch = titleRes1.titles.every(t => ['formal', 'howto'].includes(t.style));
+  if (titleRes1.titles.length === 2 && allStylesMatch) {
+    ok(`请求 2 个 [formal/howto] 标题，返回 ${titleRes1.titles.length} 个且风格全部合规 ✓`);
+    pass++;
+  } else {
+    fail(`返回 ${titleRes1.titles.length} 个标题，风格: ${titleRes1.titles.map(t => t.style).join('、')}`);
+    failCount++;
+  }
+  titleRes1.titles.forEach(t => console.log(`     [${t.style}] ${t.title}`));
 
-  // ============ 7. 会话能力 ============
-  printSection('7. 会话能力');
-  const initialDraft = '这是我的第一篇文章草稿，关于时间管理。我觉得时间管理很重要，但不知道怎么写。';
-  const startResult = sdk.conversation.startConversation(initialDraft);
-  console.log(`  🆔 会话ID: ${startResult.conversationId}`);
-  console.log(`  📝 响应: ${startResult.response}`);
-  startResult.userFriendlyChanges.forEach(c => console.log(`  ${c}`));
-  console.log(`  📄 当前版本: v${startResult.currentVersion}`);
+  const titleRes2 = await sdk.title.generate({ topic: '深度工作', count: 3 });
+  if (titleRes2.titles.length === 3) {
+    ok(`不指定 styles，仅指定 count=3，返回 ${titleRes2.titles.length} 个标题 ✓`);
+    pass++;
+  } else {
+    fail(`期望 3 个标题，实际 ${titleRes2.titles.length} 个`);
+    failCount++;
+  }
 
-  printSubsection('继续改稿');
-  const revisedContent = '这是我的第一篇文章草稿，关于时间管理。我觉得时间管理很重要，但不知道怎么写。时间管理就是管理自己的注意力。';
-  const continueResult = await sdk.conversation.continueConversation({
-    conversationId: startResult.conversationId,
-    instruction: '帮我优化第三段的逻辑，让它更通顺',
-    currentContent: revisedContent,
-  });
-  console.log(`  🤖 响应: ${continueResult.response}`);
-  continueResult.userFriendlyChanges.forEach(c => console.log(`  ${c}`));
-  console.log(`  📄 当前版本: v${continueResult.currentVersion}`);
+  // ============ 4. 会话改稿：返回改写后的正文并保存为新版本 ============
+  printSection('4. 会话改稿：返回 revisedContent，版本对比展示 AI 改写变化');
 
-  printSubsection('版本历史');
-  const versions = sdk.conversation.getVersions(startResult.conversationId);
-  versions.forEach(v => {
-    console.log(`  v${v.version} (${new Date(v.timestamp).toLocaleTimeString()}): ${v.description}`);
-    v.changes.forEach(c => console.log(`    - ${c}`));
-  });
+  const initialDraft = '时间管理就是管理自己的注意力。\n很多人误以为时间管理是做更多的事。\n但其实关键在于做正确的事。';
+  const start = sdk.conversation.startConversation(initialDraft);
+  ok(`会话已创建，v1 内容长度：${start.revisedContent.length} 字`);
 
-  printSubsection('版本对比 (v1 vs v2)');
-  const diff = sdk.conversation.compareVersions(startResult.conversationId, 1, 2);
-  console.log(`  ${diff.summary}`);
-  diff.changes.forEach(c => {
-    console.log(`  [${c.type}] ${c.explanation}`);
+  printSubsection('调用 continueConversation 改稿');
+  const revised = await sdk.conversation.continueConversation({
+    conversationId: start.conversationId,
+    instruction: '帮我优化逻辑，增加案例',
+    currentContent: initialDraft,
   });
+  if (revised.revisedContent && revised.revisedContent.length > initialDraft.length) {
+    ok(`v2 返回 revisedContent，长度 ${revised.revisedContent.length} 字（比原文多 ${revised.revisedContent.length - initialDraft.length} 字，AI 已补充内容）✓`);
+    pass++;
+  } else {
+    fail('v2 未返回有效的 AI 改写内容');
+    failCount++;
+  }
+  console.log(`     用户友好修改说明:`);
+  revised.userFriendlyChanges.forEach(c => console.log(`       ${c}`));
+
+  printSubsection('查看 v2 版本保存的 content（应该是 AI 改写后的内容，不是用户传入的原文）');
+  const versions = sdk.conversation.getVersions(start.conversationId);
+  const v2 = versions.find(v => v.version === 2);
+  if (v2 && v2.content.length > initialDraft.length) {
+    ok(`v2 版本已保存 AI 改写后的内容，长度 ${v2.content.length} 字 ✓`);
+    pass++;
+  } else {
+    fail('v2 版本未正确保存 AI 改写内容');
+    failCount++;
+  }
+
+  printSubsection('版本对比 v1 vs v2（应能看到 AI 的改稿差异）');
+  const diff = sdk.conversation.compareVersions(start.conversationId, 1, 2);
+  console.log(`     ${diff.summary}`);
+  if (diff.changes.length > 0) {
+    ok(`版本对比检测到 ${diff.changes.length} 处变更 ✓`);
+    pass++;
+  } else {
+    fail('版本对比未检测到任何变更');
+    failCount++;
+  }
+  diff.changes.slice(0, 3).forEach(c => console.log(`       [${c.type}] ${c.explanation}`));
+
+  // ============ 5. 输入校验：明确的错误信息 ============
+  printSection('5. 输入校验：明确报错（code + message）');
+
+  printSubsection('空主题校验');
+  try {
+    await sdk.topic.analyze({ topic: '   ' });
+    fail('空主题未抛出错误');
+    failCount++;
+  } catch (e) {
+    const err = e as SDKError;
+    if (err.code === ERROR_CODES.EMPTY_TOPIC) {
+      ok(`空主题正确抛出 EMPTY_TOPIC: "${err.message}" ✓`);
+      pass++;
+    } else {
+      fail(`错误 code 不匹配: ${err.code}`);
+      failCount++;
+    }
+  }
+
+  printSubsection('非法章节数校验');
+  try {
+    await sdk.outline.generate({ topic: 'x', chapterCount: 100 });
+    fail('非法章节数未抛出错误');
+    failCount++;
+  } catch (e) {
+    const err = e as SDKError;
+    if (err.code === ERROR_CODES.INVALID_CHAPTER_COUNT) {
+      ok(`100 章正确抛出 INVALID_CHAPTER_COUNT: "${err.message}" ✓`);
+      pass++;
+    } else {
+      fail(`错误 code 不匹配: ${err.code}`);
+      failCount++;
+    }
+  }
+
+  printSubsection('空要点校验');
+  try {
+    await sdk.expand.expand({ bulletPoints: [] });
+    fail('空要点未抛出错误');
+    failCount++;
+  } catch (e) {
+    const err = e as SDKError;
+    if (err.code === ERROR_CODES.EMPTY_BULLET_POINTS) {
+      ok(`空要点正确抛出 EMPTY_BULLET_POINTS: "${err.message}" ✓`);
+      pass++;
+    } else {
+      fail(`错误 code 不匹配: ${err.code}`);
+      failCount++;
+    }
+  }
+
+  printSubsection('空会话 ID 校验');
+  try {
+    await sdk.conversation.continueConversation({ conversationId: '', instruction: 'test' });
+    fail('空会话 ID 未抛出错误');
+    failCount++;
+  } catch (e) {
+    const err = e as SDKError;
+    if (err.code === ERROR_CODES.EMPTY_CONVERSATION_ID) {
+      ok(`空会话 ID 正确抛出 EMPTY_CONVERSATION_ID: "${err.message}" ✓`);
+      pass++;
+    } else {
+      fail(`错误 code 不匹配: ${err.code}`);
+      failCount++;
+    }
+  }
+
+  printSubsection('不存在的会话校验');
+  try {
+    await sdk.conversation.continueConversation({ conversationId: 'conv_not_exist_123', instruction: 'test' });
+    fail('不存在的会话未抛出错误');
+    failCount++;
+  } catch (e) {
+    const err = e as SDKError;
+    if (err.code === ERROR_CODES.CONVERSATION_NOT_FOUND) {
+      ok(`不存在的会话正确抛出 CONVERSATION_NOT_FOUND: "${err.message}" ✓`);
+      pass++;
+    } else {
+      fail(`错误 code 不匹配: ${err.code}`);
+      failCount++;
+    }
+  }
+
+  printSubsection('非法标题风格校验');
+  try {
+    await sdk.title.generate({ topic: 'x', styles: ['invalid_style' as any] });
+    fail('非法标题风格未抛出错误');
+    failCount++;
+  } catch (e) {
+    const err = e as SDKError;
+    if (err.code === ERROR_CODES.INVALID_STYLES) {
+      ok(`非法风格正确抛出 INVALID_STYLES: "${err.message}" ✓`);
+      pass++;
+    } else {
+      fail(`错误 code 不匹配: ${err.code}`);
+      failCount++;
+    }
+  }
+
+  printSubsection('空润色文本校验');
+  try {
+    await sdk.polish.polish({ text: '' });
+    fail('空润色文本未抛出错误');
+    failCount++;
+  } catch (e) {
+    const err = e as SDKError;
+    if (err.code === ERROR_CODES.EMPTY_TEXT) {
+      ok(`空润色文本正确抛出 EMPTY_TEXT ✓`);
+      pass++;
+    } else {
+      fail(`错误 code 不匹配: ${err.code}`);
+      failCount++;
+    }
+  }
 
   // 清理
-  sdk.conversation.deleteConversation(startResult.conversationId);
+  sdk.conversation.deleteConversation(start.conversationId);
 
-  printSection('✅ 所有 7 组能力演示完成');
-  console.log('\n提示: 将 config.provider 改为 "openai" 并配置 apiKey 即可接入真实模型');
+  // ============ 汇总 ============
+  printSection(`测试汇总：${pass} 通过 / ${failCount} 失败 / 共 ${pass + failCount} 项`);
+  if (failCount === 0) {
+    console.log('\n🎉 所有验证点全部通过！');
+  } else {
+    console.log(`\n⚠️  有 ${failCount} 项未通过`);
+    process.exit(1);
+  }
 }
 
 main().catch(err => {
