@@ -6,6 +6,8 @@ import {
   ConversationResult,
   VersionComparison,
   BranchComparison,
+  RouteComparison,
+  RouteVersionInfo,
 } from '../types';
 import { assertNonEmptyString, SDKError, ERROR_CODES } from '../errors';
 
@@ -395,5 +397,147 @@ export class ConversationManager {
         userFriendlyChanges: [],
       };
     }
+  }
+
+  compareRoutes(conversationId: string, baseVersion?: number): RouteComparison {
+    assertNonEmptyString(
+      conversationId,
+      ERROR_CODES.EMPTY_CONVERSATION_ID,
+      '会话 ID 不能为空'
+    );
+    const session = this.sessions.get(conversationId);
+    if (!session) {
+      throw new SDKError(ERROR_CODES.CONVERSATION_NOT_FOUND, `会话 ${conversationId} 不存在`);
+    }
+
+    const baseVer = baseVersion ?? 1;
+    const base = session.versions.find(v => v.version === baseVer);
+    if (!base) {
+      throw new SDKError(ERROR_CODES.VERSION_NOT_FOUND, `基准版本 v${baseVer} 不存在`);
+    }
+
+    const branchIds = Array.from(new Set(session.versions.map(v => v.branchId)));
+    const routes: RouteVersionInfo[] = branchIds.map(branchId => {
+      const branchVersions = session.versions
+        .filter(v => v.branchId === branchId && v.version > baseVer)
+        .sort((a, b) => a.version - b.version);
+      const latest = branchVersions.length > 0
+        ? branchVersions[branchVersions.length - 1]
+        : base;
+      const keyChanges = latest === base ? [] : latest.changes;
+      const { added, removed, overview } = this.calcDiff(base.content, latest.content);
+      return {
+        branchId,
+        version: latest.version,
+        content: latest.content,
+        summary: this.buildSummary(latest.content, branchId),
+        wordCount: this.countWords(latest.content),
+        keyChanges: keyChanges.length > 0 ? keyChanges : ['与基准版本内容一致'],
+        diffFromBase: {
+          charsAdded: added,
+          charsRemoved: removed,
+          overview,
+        },
+      };
+    });
+
+    const crossRouteDiffs: RouteComparison['crossRouteDiffs'] = [];
+    for (let i = 0; i < routes.length; i++) {
+      for (let j = i + 1; j < routes.length; j++) {
+        const a = routes[i];
+        const b = routes[j];
+        const { added, removed, overview } = this.calcDiff(a.content, b.content);
+        crossRouteDiffs.push({
+          fromBranch: a.branchId,
+          toBranch: b.branchId,
+          charsAdded: added,
+          charsRemoved: removed,
+          overview,
+          keyDifferences: this.extractKeyDiffBetween(a, b),
+        });
+      }
+    }
+
+    const baseSummary = this.buildSummary(base.content, '基准');
+    const routeSummaries = routes.map(r =>
+      `• ${r.branchId}（v${r.version}）：${r.diffFromBase.overview}，共 ${r.wordCount} 字，主要改动 ${r.keyChanges.length} 处`
+    ).join('\n');
+    const crossSummaries = crossRouteDiffs.map(d =>
+      `· ${d.fromBranch} ↔ ${d.toBranch}：${d.keyDifferences[0] || d.overview}`
+    ).join('\n');
+    const userFriendlySummary = `📋 多版本路线对比结果
+
+🗂 基准版本：v${baseVer}，共 ${this.countWords(base.content)} 字，摘要：${baseSummary}
+
+🚀 各路线最新版：
+${routeSummaries}
+
+🔀 路线间差异：
+${crossSummaries || '（仅有单一路线，无横向对比）'}
+
+💡 选择建议：若面向大众传播推荐营销分支；若面向学术发表推荐学术分支；若日常使用选主线即可。`;
+
+    return {
+      conversationId,
+      baseVersion: baseVer,
+      baseContent: base.content,
+      baseSummary,
+      routes,
+      crossRouteDiffs,
+      userFriendlySummary,
+    };
+  }
+
+  private calcDiff(a: string, b: string): { added: number; removed: number; overview: string } {
+    const added = Math.max(0, b.length - a.length);
+    const removed = Math.max(0, a.length - b.length);
+    let overview: string;
+    if (added === 0 && removed === 0) {
+      overview = '与基准完全相同';
+    } else if (added > removed) {
+      overview = `新增约 ${added} 字，删减约 ${removed} 字，整体篇幅扩充`;
+    } else if (removed > added) {
+      overview = `新增约 ${added} 字，删减约 ${removed} 字，整体篇幅精简`;
+    } else {
+      overview = `新增约 ${added} 字，删减约 ${removed} 字，整体篇幅相当但内容有改写`;
+    }
+    return { added, removed, overview };
+  }
+
+  private buildSummary(content: string, label: string): string {
+    const cleaned = content.replace(/\n+/g, ' ').trim();
+    if (cleaned.length <= 40) return cleaned || `（${label}版本内容）`;
+    return cleaned.substring(0, 40) + '…';
+  }
+
+  private countWords(content: string): number {
+    const chinese = (content.match(/[\u4e00-\u9fa5]/g) || []).length;
+    const english = (content.match(/[A-Za-z]+/g) || []).length;
+    return chinese + english;
+  }
+
+  private extractKeyDiffBetween(a: RouteVersionInfo, b: RouteVersionInfo): string[] {
+    const diffs: string[] = [];
+    const tagA = a.content.match(/【([\u4e00-\u9fa5A-Za-z]+)润色】/)?.[1] || '';
+    const tagB = b.content.match(/【([\u4e00-\u9fa5A-Za-z]+)润色】/)?.[1] || '';
+    if (tagA && tagB && tagA !== tagB) {
+      diffs.push(`${a.branchId}走「${tagA}」路线，${b.branchId}走「${tagB}」路线`);
+    }
+    if (a.wordCount !== b.wordCount) {
+      diffs.push(`篇幅差异：${a.wordCount} 字 vs ${b.wordCount} 字（${b.branchId}${b.wordCount > a.wordCount ? '更长' : '更短'}）`);
+    }
+    if (/参考文献/.test(b.content) && !/参考文献/.test(a.content)) {
+      diffs.push(`${b.branchId}包含规范引用和参考文献，${a.branchId}未涉及`);
+    }
+    if (/行动号召|CTA|卖点|痛点/.test(b.content) && !/行动号召|CTA|卖点|痛点/.test(a.content)) {
+      diffs.push(`${b.branchId}侧重营销卖点和行动号召，${a.branchId}未涉及`);
+    }
+    if (/三步法|劳逸结合|通用/.test(b.content) && !/三步法|劳逸结合|通用/.test(a.content)) {
+      diffs.push(`${b.branchId}侧重可落地操作方法，${a.branchId}未涉及`);
+    }
+    if (diffs.length === 0) {
+      diffs.push(`两条路线整体方向相近，细节改动各有侧重`);
+    }
+    return diffs;
   }
 }

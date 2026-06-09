@@ -74,6 +74,21 @@ export class TitleGenerator {
         );
       }
     }
+    if (req.mustIncludeKeywords) {
+      if (!Array.isArray(req.keywords) || req.keywords.length === 0) {
+        throw new SDKError(
+          ERROR_CODES.KEYWORD_MISSING,
+          '开启 mustIncludeKeywords 时，必须传入非空的 keywords 数组'
+        );
+      }
+      const hasBlank = req.keywords.some(k => typeof k !== 'string' || k.trim().length === 0);
+      if (hasBlank) {
+        throw new SDKError(
+          ERROR_CODES.KEYWORD_MISSING,
+          'keywords 数组中存在空字符串或空白内容，请确保每个关键词都有实际内容'
+        );
+      }
+    }
     let styles = req.styles ?? ALL_STYLES;
     const invalidStyles = styles.filter(s => !(s in STYLE_DESCRIPTIONS));
     if (invalidStyles.length > 0) {
@@ -122,6 +137,15 @@ ${styleDescriptions}
     }
     if (req.avoidExaggeration) {
       result = this.enforceNoExaggeration(result, req.topic, styles);
+    }
+
+    result.titles = result.titles.map(t => ({
+      ...t,
+      matchedKeywords: (req.keywords || []).filter(kw => t.title.includes(kw)),
+    }));
+
+    if (req.keywords && req.keywords.length > 0) {
+      result = { ...result, keywordCoverage: this.buildKeywordCoverage(result.titles, req.keywords) };
     }
 
     return result;
@@ -241,6 +265,7 @@ ${styleDescriptions}
           highlights: ['直击主题', '清晰明了', '符合' + STYLE_DESCRIPTIONS[style].split('，')[0]],
           explanation: `采用${STYLE_DESCRIPTIONS[style].split('，')[0]}设计，围绕「${topic}」核心主题展开。`,
           suitabilityScore: 75,
+          matchedKeywords: [],
         };
         titles.push(filler);
       }
@@ -255,6 +280,7 @@ ${styleDescriptions}
         style,
         suitabilityScore: Math.max(0, Math.min(100, t.suitabilityScore || 75)),
         highlights: Array.isArray(t.highlights) && t.highlights.length > 0 ? t.highlights : ['符合主题', '表达清晰'],
+        matchedKeywords: Array.isArray(t.matchedKeywords) ? t.matchedKeywords : [],
       };
     });
 
@@ -304,5 +330,23 @@ ${styleDescriptions}
       }
       throw new SDKError(ERROR_CODES.PARSE_ERROR, '无法解析标题生成结果，请稍后重试');
     }
+  }
+
+  private buildKeywordCoverage(titles: TitleOption[], keywords: string[]): NonNullable<TitleGenerationResult['keywordCoverage']> {
+    const perTitleCoverage = titles.map((t, idx) => ({
+      titleIndex: idx,
+      matchedKeywords: t.matchedKeywords,
+      hasAllRequired: t.matchedKeywords.length >= 1,
+    }));
+    const coveredKeywords = Array.from(new Set(titles.flatMap(t => t.matchedKeywords)));
+    const missingKeywords = keywords.filter(kw => !coveredKeywords.includes(kw));
+    const coverageRate = keywords.length > 0 ? coveredKeywords.length / keywords.length : 0;
+    return {
+      totalKeywords: keywords.length,
+      coveredKeywords,
+      missingKeywords,
+      coverageRate: Math.round(coverageRate * 100) / 100,
+      perTitleCoverage,
+    };
   }
 }

@@ -146,12 +146,22 @@ export interface TitleOption {
   highlights: string[];
   explanation: string;
   suitabilityScore: number;
+  matchedKeywords: string[];
+}
+
+export interface KeywordCoverage {
+  totalKeywords: number;
+  coveredKeywords: string[];
+  missingKeywords: string[];
+  coverageRate: number;
+  perTitleCoverage: { titleIndex: number; matchedKeywords: string[]; hasAllRequired: boolean }[];
 }
 
 export interface TitleGenerationResult {
   titles: TitleOption[];
   recommendation: string;
   bestPractice: string;
+  keywordCoverage?: KeywordCoverage;
 }
 
 export interface CitationCheckRequest {
@@ -290,4 +300,81 @@ export interface BranchComparison {
   commonBase: number;
   differences: string[];
   userFriendlySummary: string;
+}
+
+export interface RouteVersionInfo {
+  branchId: string;
+  version: number;
+  content: string;
+  summary: string;
+  wordCount: number;
+  keyChanges: string[];
+  diffFromBase: {
+    charsAdded: number;
+    charsRemoved: number;
+    overview: string;
+  };
+}
+
+export interface RouteComparison {
+  conversationId: string;
+  baseVersion: number;
+  baseContent: string;
+  baseSummary: string;
+  routes: RouteVersionInfo[];
+  crossRouteDiffs: {
+    fromBranch: string;
+    toBranch: string;
+    charsAdded: number;
+    charsRemoved: number;
+    overview: string;
+    keyDifferences: string[];
+  }[];
+  userFriendlySummary: string;
+}
+
+export type PipelineStep = 'topic' | 'outline' | 'title';
+
+export interface TopicPipelineRequest {
+  topic: string;
+  context?: string;
+  audience?: string;
+  keywords?: string[];
+  chapterCount?: number;
+  titleCount?: number;
+  titleStyles?: TitleStyle[];
+  tone?: Tone;
+  length?: ArticleLength;
+  runSteps?: PipelineStep[];
+}
+
+export interface PipelineStepResult {
+  step: PipelineStep;
+  status: BatchTaskStatus;
+  result?: unknown;
+  errorCode?: string;
+  errorMessage?: string;
+  skippedReason?: string;
+}
+
+export interface TopicPipelineResult {
+  topic: string;
+  status: 'success' | 'partial' | 'failed';
+  steps: PipelineStep[];
+  results: Record<PipelineStep, PipelineStepResult>;
+  topicAnalysis?: TopicAnalysisResult;
+  outline?: OutlineGenerationResult;
+  titles?: TitleGenerationResult;
+  summary: string;
+  userFriendlyStatus: string;
+}
+
+export interface PipelineRunResult {
+  total: number;
+  successCount: number;
+  partialCount: number;
+  failedCount: number;
+  topics: TopicPipelineResult[];
+  summary: string;
+  userFriendlyReport: string;
 }

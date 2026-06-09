@@ -120,6 +120,52 @@ export class MockAIProvider implements AIProvider {
     await new Promise(resolve => setTimeout(resolve, 50));
     const lastUserMessage = [...messages].reverse().find(m => m.role === 'user')?.content || '';
 
+    // 强特征优先："当前文章内容"是会话改稿独有，先匹配避免被润色/引用等关键词截胡
+    if (lastUserMessage.includes('当前文章内容')) {
+      const original = extractArticleContent(lastUserMessage);
+      const isMarketing = /营销|推广|转化|卖点|吸睛|爆款|文案风格/.test(lastUserMessage);
+      const isAcademic = /学术|论文|研究|严谨|引用|数据/.test(lastUserMessage);
+
+      let revised = '';
+      let response = '';
+      let changes: string[] = [];
+
+      if (isMarketing) {
+        revised = (original || '初稿') + '\n\n——【营销风格润色】——\n💡 核心卖点升级：时间管理不再是枯燥的技能，而是让你每天多出 2 小时的效率神器！\n🎯 用户痛点直击：还在为每天加班到深夜而焦虑？这套方法已帮助 10000+ 职场人实现工作生活平衡。\n📣 行动号召：现在就开始实践，30 天见证显著改变！';
+        response = '已为您切换到营销风格文案。主要强化了卖点包装、痛点直击和行动号召，更适合投放推广场景。';
+        changes = [
+          '🎯 增加了用户痛点直击描述',
+          '💡 突出了核心卖点和收益感',
+          '📣 补充了行动号召（CTA）语句',
+          '📈 加入了社会证明（数据佐证）',
+        ];
+      } else if (isAcademic) {
+        revised = (original || '初稿') + '\n\n——【学术风格润色】——\n根据 Chen et al. (2023) 的实证研究，注意力管理策略与工作绩效之间存在显著正相关（r = 0.62, p < 0.01）。如表 1 所示，采用结构化时间管理方法的被试组，其任务完成率相较对照组提升 34.7%（标准差 = 8.2%）。上述结果与 Smith & Jones (2022) 的元分析结论一致，支持了注意力资源有限性理论的核心假设。未来研究可进一步探讨个体差异变量的调节效应。\n\n参考文献：\nChen, Y., et al. (2023). Attention Management and Job Performance. Journal of Organizational Psychology, 45(2), 112-138.\nSmith, A. B., & Jones, C. D. (2022). A meta-analysis of time management interventions.';
+        response = '已为您切换到学术风格表达。补充了实证数据、统计显著性说明、规范引用和参考文献，符合学术写作标准。';
+        changes = [
+          '📊 补充了实证研究数据与统计显著性',
+          '📚 增加了规范的文内引用',
+          '📝 补充了参考文献列表（APA 格式）',
+          '🔬 语言调整为客观严谨的学术表达',
+        ];
+      } else {
+        revised = (original || '初稿') + '\n\n——【主线通用润色】——\n为了便于实际落地，这里补充一个可执行的三步法：第一步，每晚睡前花 10 分钟列出第二天最重要的 3 件事；第二步，上午用整块时间优先处理这 3 件事；第三步，下班前花 5 分钟复盘完成情况。坚持两周后，你会发现重要事项的完成率有明显提升。同时也要注意劳逸结合，适当的休息反而有助于长期保持高效状态。';
+        response = '已完成主线润色。优化了逻辑衔接，补充了可落地的三步法，并增加了劳逸结合的提醒，适合通用阅读场景。';
+        changes = [
+          '📝 优化了段落间的逻辑衔接',
+          '✅ 补充了可执行的三步操作法',
+          '😌 增加了劳逸结合的平衡建议',
+          '🔗 语言调整为清晰自然的通用表达',
+        ];
+      }
+
+      return JSON.stringify({
+        response,
+        revisedContent: revised,
+        userFriendlyChanges: changes,
+      });
+    }
+
     if (lastUserMessage.includes('主题分析') || lastUserMessage.includes('受众') || (lastUserMessage.includes('topic') && lastUserMessage.includes('关键词'))) {
       const topic = extractTopic(lastUserMessage);
       return JSON.stringify({
@@ -209,21 +255,53 @@ export class MockAIProvider implements AIProvider {
       lastUserMessage.includes('继续') ||
       lastUserMessage.includes('改稿') ||
       lastUserMessage.includes('优化') ||
+      lastUserMessage.includes('润色') ||
+      lastUserMessage.includes('改成') ||
+      lastUserMessage.includes('风格') ||
       lastUserMessage.includes('当前文章内容')
     ) {
       const original = extractArticleContent(lastUserMessage);
-      const revised = original
-        ? original + '\n\n——【AI 改稿补充】——\n为了让内容更有说服力，我增加了一个真实案例：某团队通过实施上述方法，三个月内效率提升了 40%。同时优化了段落间的过渡，使逻辑更流畅。'
-        : '这是 AI 改写后的文章内容，结构更清晰，逻辑更连贯，并且增加了具体案例来增强说服力。';
+      const isMarketing = /营销|推广|转化|卖点|吸睛|爆款|文案风格/.test(lastUserMessage);
+      const isAcademic = /学术|论文|研究|严谨|引用|数据/.test(lastUserMessage);
+      const isMain = !isMarketing && !isAcademic;
+
+      let revised = '';
+      let response = '';
+      let changes: string[] = [];
+
+      if (isMarketing) {
+        revised = (original || '初稿') + '\n\n——【营销风格润色】——\n💡 核心卖点升级：时间管理不再是枯燥的技能，而是让你每天多出 2 小时的效率神器！\n🎯 用户痛点直击：还在为每天加班到深夜而焦虑？这套方法已帮助 10000+ 职场人实现工作生活平衡。\n📣 行动号召：现在就开始实践，30 天见证显著改变！';
+        response = '已为您切换到营销风格文案。主要强化了卖点包装、痛点直击和行动号召，更适合投放推广场景。';
+        changes = [
+          '🎯 增加了用户痛点直击描述',
+          '💡 突出了核心卖点和收益感',
+          '📣 补充了行动号召（CTA）语句',
+          '📈 加入了社会证明（数据佐证）',
+        ];
+      } else if (isAcademic) {
+        revised = (original || '初稿') + '\n\n——【学术风格润色】——\n根据 Chen et al. (2023) 的实证研究，注意力管理策略与工作绩效之间存在显著正相关（r = 0.62, p < 0.01）。如表 1 所示，采用结构化时间管理方法的被试组，其任务完成率相较对照组提升 34.7%（标准差 = 8.2%）。上述结果与 Smith & Jones (2022) 的元分析结论一致，支持了注意力资源有限性理论的核心假设。未来研究可进一步探讨个体差异变量的调节效应。\n\n参考文献：\nChen, Y., et al. (2023). Attention Management and Job Performance. Journal of Organizational Psychology, 45(2), 112-138.\nSmith, A. B., & Jones, C. D. (2022). A meta-analysis of time management interventions.';
+        response = '已为您切换到学术风格表达。补充了实证数据、统计显著性说明、规范引用和参考文献，符合学术写作标准。';
+        changes = [
+          '📊 补充了实证研究数据与统计显著性',
+          '📚 增加了规范的文内引用',
+          '📝 补充了参考文献列表（APA 格式）',
+          '🔬 语言调整为客观严谨的学术表达',
+        ];
+      } else {
+        revised = (original || '初稿') + '\n\n——【主线通用润色】——\n为了便于实际落地，这里补充一个可执行的三步法：第一步，每晚睡前花 10 分钟列出第二天最重要的 3 件事；第二步，上午用整块时间优先处理这 3 件事；第三步，下班前花 5 分钟复盘完成情况。坚持两周后，你会发现重要事项的完成率有明显提升。同时也要注意劳逸结合，适当的休息反而有助于长期保持高效状态。';
+        response = '已完成主线润色。优化了逻辑衔接，补充了可落地的三步法，并增加了劳逸结合的提醒，适合通用阅读场景。';
+        changes = [
+          '📝 优化了段落间的逻辑衔接',
+          '✅ 补充了可执行的三步操作法',
+          '� 增加了劳逸结合的平衡建议',
+          '🔗 语言调整为清晰自然的通用表达',
+        ];
+      }
 
       return JSON.stringify({
-        response: '好的，我已帮您优化了文章。主要调整包括：优化了第三段的逻辑结构，新增了一个实际案例来增强说服力，调整了若干语句的表达方式使其更通顺。',
+        response,
         revisedContent: revised,
-        userFriendlyChanges: [
-          '📝 优化了第三段的逻辑结构，使论证更清晰',
-          '📌 新增了一个实际案例，增强内容说服力',
-          '✏️ 调整了若干语句的表达方式，使其更通顺',
-        ],
+        userFriendlyChanges: changes,
       });
     }
 
